@@ -23,10 +23,13 @@ typedef struct
 
 #define SPEED_CURVE_SIZE    10      // 速度档位
 
-static const uint16_t speed_curve_lut[SPEED_CURVE_SIZE] = {150, 300, 450, 50, 75, 100, 125, 175, 200, 225};
+// 速度档位对应的定时器中断周期(µs)，即步进脉冲半周期
+// 索引0~2: 旧版3档兼容(低速档)；索引3~9: 扩展档位(高速档)
+static const uint16_t sm_pulse_period_us[SPEED_CURVE_SIZE] = {150, 300, 450, 50, 75, 100, 125, 175, 200, 225};
 
 // 弱定义硬件配置表，用户必须在自己的项目中提供强定义
-__weak const SM_HwConfig_t sm_hw_table[1] = {0};
+// 大小与SM_COUNT一致，未提供强定义时所有timer为NULL，SM_Init会安全跳过
+__weak const SM_HwConfig_t sm_hw_table[SM_COUNT] = {0};
 
 static volatile SM_Vars_t sm_vars[SM_COUNT] = {0}; // 所有运行时状态集中管理
 
@@ -45,7 +48,7 @@ static void start_motor_timer(uint8_t id, uint16_t period_index)
         return;
     }
 
-    __HAL_TIM_SET_AUTORELOAD(sm_hw_table[id].timer, speed_curve_lut[period_index]);
+    __HAL_TIM_SET_AUTORELOAD(sm_hw_table[id].timer, sm_pulse_period_us[period_index]);
     __HAL_TIM_SET_COUNTER(sm_hw_table[id].timer, 0); // 重置计数器，防止残留值导致首次更新事件异常
     if (HAL_TIM_Base_Start_IT(sm_hw_table[id].timer) != HAL_OK)
     {
@@ -191,7 +194,8 @@ static void sm_delay_sleep_poll(void)
             continue;
         }
 
-        // tick在连续运行49天会溢出，但无须处理
+        // 无符号减法在tick溢出时仍能正确计算差值，前提是实际间隔 < UINT32_MAX/2（约24.8天）
+        // SLEEP_TIMEOUT_MS为3秒，永远不会触发此边界
         if (now_tick - sm_vars[id].stop_tick >= pdMS_TO_TICKS(SLEEP_TIMEOUT_MS))
         {
             HAL_GPIO_WritePin(sm_hw_table[id].sw_port, sm_hw_table[id].sw_pin, GPIO_PIN_SET);     // 失能电机
@@ -246,7 +250,7 @@ void SM_Init(void)
         }
     }
 
-    sm_report_queue = xQueueCreate(10, sizeof(SM_Report_t));
+    sm_report_queue = xQueueCreate(SM_COUNT, sizeof(SM_Report_t));
     if (sm_report_queue == NULL)
     {
         return;
@@ -376,7 +380,15 @@ void SM_SetSpeed(uint8_t id, uint8_t speed)
     {
         return;
     }
-    sm_vars[id].speed = speed - 1;
+
+    uint8_t index = speed - 1;
+    sm_vars[id].speed = index;
+
+    // 运行中电机立即更新定时器周期，下一个中断生效
+    if (sm_vars[id].state == SM_STATE_RUNNING)
+    {
+        __HAL_TIM_SET_AUTORELOAD(sm_hw_table[id].timer, sm_pulse_period_us[index]);
+    }
 }
 
 /**
