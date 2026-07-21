@@ -1,0 +1,32 @@
+#ifndef __STEPPER_MOTOR_CONFIG_H_
+#define __STEPPER_MOTOR_CONFIG_H_
+
+#include "main.h"
+#include "tim.h"
+
+// 此文件为默认配置，用户应复制到自己项目中覆盖
+// 通过CMake include路径顺序，用户的同名文件会优先被找到
+
+// 用户必须在自己的配置文件中定义以下内容：
+//   SM_COUNT          - 电机数量
+//   SM_Id_e           - 电机编号枚举
+//   sm_hw_table[]     - 硬件配置表（extern声明 + .c中定义）
+
+// 以下为可选覆盖的默认值
+#ifndef SM_DEFAULT_SPEED
+#define SM_DEFAULT_SPEED    2       // 默认速度档位（1~10）
+#endif
+
+#ifndef SLEEP_TIMEOUT_MS
+#define SLEEP_TIMEOUT_MS    3000    // 电机休眠超时时间(ms)
+#endif
+
+#ifndef SM_TASK_STACK_SIZE
+#define SM_TASK_STACK_SIZE  512
+#endif
+
+#ifndef SM_TASK_PRIORITY
+#define SM_TASK_PRIORITY    5
+#endif
+
+#endif /* __STEPPER_MOTOR_CONFIG_H_ */

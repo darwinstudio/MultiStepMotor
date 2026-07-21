@@ -1,0 +1,446 @@
+#include "FreeRTOS.h"
+#include "task.h"
+#include "queue.h"
+#include "stepper_motor.h"
+
+// 电机控制变量集合结构体
+typedef struct
+{
+    SM_State_e state;// 电机状态
+    SM_StopType_e stop_type;// 电机停止类型
+    uint32_t target_steps;// 目标步数
+    uint32_t step_cnt;// 电机运行步数计数 CLK翻转2次=1步
+    uint8_t toggle_cnt;// CLK翻转计数
+    uint8_t speed;// 速度索引
+    TickType_t stop_tick;// 停止时间
+} SM_Vars_t;
+
+typedef struct
+{
+    uint8_t id;// 电机ID
+    SM_StopType_e stop_type;// 电机停止类型
+} SM_Report_t;
+
+#define SPEED_CURVE_SIZE    10      // 速度档位
+
+static const uint16_t speed_curve_lut[SPEED_CURVE_SIZE] = {150, 300, 450, 50, 75, 100, 125, 175, 200, 225};
+
+// 弱定义硬件配置表，用户必须在自己的项目中提供强定义
+__weak const SM_HwConfig_t sm_hw_table[1] = {0};
+
+static volatile SM_Vars_t sm_vars[SM_COUNT] = {0}; // 所有运行时状态集中管理
+
+static QueueHandle_t sm_report_queue = NULL;
+
+/**
+ * @brief 启动电机对应的定时器
+ *
+ * @param id
+ * @param period_index
+ */
+static void start_motor_timer(uint8_t id, uint16_t period_index)
+{
+    if (sm_hw_table[id].timer == NULL || period_index >= SPEED_CURVE_SIZE)
+    {
+        return;
+    }
+
+    __HAL_TIM_SET_AUTORELOAD(sm_hw_table[id].timer, speed_curve_lut[period_index]);
+    __HAL_TIM_SET_COUNTER(sm_hw_table[id].timer, 0); // 重置计数器，防止残留值导致首次更新事件异常
+    if (HAL_TIM_Base_Start_IT(sm_hw_table[id].timer) != HAL_OK)
+    {
+        return; // 启动失败则不更新状态
+    }
+
+    sm_vars[id].state = SM_STATE_RUNNING;
+}
+
+/**
+ * @brief 在中断中停止步进电机
+ *
+ * @param id
+ */
+static void stop_motor_from_isr(uint8_t id)
+{
+    HAL_TIM_Base_Stop_IT(sm_hw_table[id].timer);
+    __HAL_TIM_SET_COUNTER(sm_hw_table[id].timer, 0); // 重置计数器，防止下次启动时残留值导致异常
+
+    sm_vars[id].toggle_cnt = 0;
+    sm_vars[id].step_cnt = 0;
+    sm_vars[id].state = SM_STATE_IDLE;
+    sm_vars[id].stop_tick = xTaskGetTickCountFromISR();
+
+    if (!sm_hw_table[id].continuous) // 连续运转的电机不发送报告
+    {
+        // 如果被设置了，那就是限位已经停止了
+        if (sm_vars[id].stop_type == SM_STOP_NONE)
+        {
+            sm_vars[id].stop_type = SM_STOP_NORMAL;
+        }
+
+        SM_Report_t report = {id, sm_vars[id].stop_type};
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+        if (sm_report_queue != NULL)
+        {
+            xQueueSendFromISR(sm_report_queue, &report, &xHigherPriorityTaskWoken);
+        }
+
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+}
+
+/**
+ * @brief 电机定时器回调函数（按步数运行）
+ * @param htim
+ */
+static void sm_timer_callback(TIM_HandleTypeDef* htim)
+{
+    uint8_t id = 0;
+    uint8_t is_found = 0;
+
+    for (uint8_t id_t = 0; id_t < SM_COUNT; id_t++)
+    {
+        id = id_t;
+        if (sm_hw_table[id].timer != NULL && !sm_hw_table[id].continuous && htim->Instance == sm_hw_table[id].timer->Instance)
+        {
+            is_found = 1;
+            break;
+        }
+    }
+    if (!is_found)
+    {
+        return;
+    }
+
+    // 安全检查：只有电机处于RUNNING状态才处理脉冲
+    if (sm_vars[id].state != SM_STATE_RUNNING)
+    {
+        HAL_TIM_Base_Stop_IT(sm_hw_table[id].timer);
+        return;
+    }
+
+    HAL_GPIO_TogglePin(sm_hw_table[id].clk_port, sm_hw_table[id].clk_pin);
+
+    sm_vars[id].toggle_cnt++;
+
+    if (sm_vars[id].toggle_cnt >= 2)
+    {
+        sm_vars[id].toggle_cnt = 0;
+        sm_vars[id].step_cnt++;
+
+        if (sm_vars[id].step_cnt >= sm_vars[id].target_steps)
+        {
+            stop_motor_from_isr(id);
+        }
+    }
+}
+
+/**
+ * @brief 连续运转电机专用的定时器回调
+ * @param htim
+ */
+static void sm_timer_continuous_callback(TIM_HandleTypeDef* htim)
+{
+    uint8_t id = 0;
+    uint8_t is_found = 0;
+
+    for (uint8_t id_t = 0; id_t < SM_COUNT; id_t++)
+    {
+        id = id_t;
+        if (sm_hw_table[id].timer != NULL && sm_hw_table[id].continuous && htim->Instance == sm_hw_table[id].timer->Instance)
+        {
+            is_found = 1;
+            break;
+        }
+    }
+    if (!is_found)
+    {
+        return;
+    }
+
+    // 安全检查：只有电机处于RUNNING状态才处理脉冲
+    if (sm_vars[id].state != SM_STATE_RUNNING)
+    {
+        HAL_TIM_Base_Stop_IT(sm_hw_table[id].timer);
+        return;
+    }
+
+    HAL_GPIO_TogglePin(sm_hw_table[id].clk_port, sm_hw_table[id].clk_pin);
+}
+
+/**
+ * @brief 延时睡眠电机，防止停不稳
+ */
+static void sm_delay_sleep_poll(void)
+{
+    const uint32_t now_tick = xTaskGetTickCount();
+
+    for (uint8_t id = 0; id < SM_COUNT; id++)
+    {
+        taskENTER_CRITICAL();
+        if (sm_vars[id].state != SM_STATE_IDLE)
+        {
+            taskEXIT_CRITICAL();
+            continue;
+        }
+        taskEXIT_CRITICAL();
+
+        if (HAL_GPIO_ReadPin(sm_hw_table[id].sw_port, sm_hw_table[id].sw_pin) != GPIO_PIN_RESET)
+        {
+            continue;
+        }
+
+        // tick在连续运行49天会溢出，但无须处理
+        if (now_tick - sm_vars[id].stop_tick >= pdMS_TO_TICKS(SLEEP_TIMEOUT_MS))
+        {
+            HAL_GPIO_WritePin(sm_hw_table[id].sw_port, sm_hw_table[id].sw_pin, GPIO_PIN_SET);     // 失能电机
+            HAL_GPIO_WritePin(sm_hw_table[id].clk_port, sm_hw_table[id].clk_pin, GPIO_PIN_RESET); // CLK拉低
+        }
+    }
+}
+
+/**
+ * @brief 电机任务入口函数
+ * @param para
+ */
+static void task_entry(void* para)
+{
+    SM_Report_t report;
+    for (;;)
+    {
+        sm_delay_sleep_poll();
+
+        if (xQueueReceive(sm_report_queue, &report, 0) == pdPASS)
+        {
+            SM_ReportAction(report.id, report.stop_type);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+/**
+ * @brief 步进电机驱动初始化
+ */
+void SM_Init(void)
+{
+    for (uint8_t id = 0; id < SM_COUNT; id++)
+    {
+        sm_vars[id].state = SM_STATE_IDLE;
+        sm_vars[id].stop_type = SM_STOP_NONE;
+        sm_vars[id].speed = SM_DEFAULT_SPEED - 1;
+
+        if (sm_hw_table[id].timer == NULL)
+        {
+            continue;
+        }
+
+        if (sm_hw_table[id].continuous)
+        {
+            HAL_TIM_RegisterCallback(sm_hw_table[id].timer, HAL_TIM_PERIOD_ELAPSED_CB_ID, sm_timer_continuous_callback);
+        }
+        else
+        {
+            HAL_TIM_RegisterCallback(sm_hw_table[id].timer, HAL_TIM_PERIOD_ELAPSED_CB_ID, sm_timer_callback);
+        }
+    }
+
+    sm_report_queue = xQueueCreate(10, sizeof(SM_Report_t));
+    if (sm_report_queue == NULL)
+    {
+        return;
+    }
+    xTaskCreate(task_entry, "sm", SM_TASK_STACK_SIZE, NULL, SM_TASK_PRIORITY, NULL);
+}
+
+/**
+ * @brief 启动电机
+ *
+ * @param id
+ * @param dir
+ * @param steps
+ */
+void SM_Run(uint8_t id, uint8_t dir, uint32_t steps)
+{
+    if (id >= SM_COUNT || dir >= SM_DIR_NUMS || steps == 0)
+    {
+        return;
+    }
+
+    taskENTER_CRITICAL();
+    if (sm_vars[id].state != SM_STATE_IDLE)
+    {
+        taskEXIT_CRITICAL();
+        SM_Report_t report = {id, SM_STOP_BUSY};
+
+        xQueueSend(sm_report_queue, &report, pdMS_TO_TICKS(200));
+        return;
+    }
+
+    sm_vars[id].target_steps = steps;// 更新目标步数
+    sm_vars[id].state = SM_STATE_READY;
+    sm_vars[id].stop_type = SM_STOP_NONE;
+    sm_vars[id].toggle_cnt = 0;
+    sm_vars[id].step_cnt = 0;
+
+    taskEXIT_CRITICAL();
+
+    // 设置电机方向
+    GPIO_PinState set_pin = (dir == SM_DIR_FORWARD ? sm_hw_table[id].forward_pin : sm_hw_table[id].reverse_pin);
+    HAL_GPIO_WritePin(sm_hw_table[id].dir_port, sm_hw_table[id].dir_pin, set_pin);
+    // 使能电机
+    HAL_GPIO_WritePin(sm_hw_table[id].sw_port, sm_hw_table[id].sw_pin, GPIO_PIN_RESET);
+    vTaskDelay(pdMS_TO_TICKS(5)); // 延时,留给电机使能的时间
+
+    taskENTER_CRITICAL();
+    if (sm_vars[id].state == SM_STATE_READY)  // 重新确认
+    {
+        start_motor_timer(id, sm_vars[id].speed);
+    }
+    else
+    {
+        // 使能窗口内被限位停止，立即关闭电机
+        HAL_GPIO_WritePin(sm_hw_table[id].sw_port, sm_hw_table[id].sw_pin, GPIO_PIN_SET);
+    }
+    taskEXIT_CRITICAL();
+}
+
+/**
+ * @brief 停止连续运转电机
+ */
+void SM_StopContinuous(uint8_t id)
+{
+    if (id >= SM_COUNT)
+    {
+        return;
+    }
+
+    if (xPortIsInsideInterrupt())
+    {
+        return;
+    }
+
+    taskENTER_CRITICAL();
+    HAL_TIM_Base_Stop_IT(sm_hw_table[id].timer);
+    __HAL_TIM_SET_COUNTER(sm_hw_table[id].timer, 0); // 重置计数器，防止下次启动时残留值导致异常
+
+    sm_vars[id].toggle_cnt = 0;
+    sm_vars[id].step_cnt = 0;
+    sm_vars[id].state = SM_STATE_IDLE;
+    sm_vars[id].stop_tick = xTaskGetTickCount();
+    taskEXIT_CRITICAL();
+}
+
+/**
+ * @brief 获取电机状态
+ *
+ * @param id
+ * @return SM_State_e
+ */
+SM_State_e SM_GetState(uint8_t id)
+{
+    if (id >= SM_COUNT)
+    {
+        return SM_STATE_NUMS;
+    }
+    return sm_vars[id].state;
+}
+
+/**
+ * @brief 获取电机当前方向
+ *
+ * @param id
+ * @return SM_Dir_e
+ */
+SM_Dir_e SM_GetDir(uint8_t id)
+{
+    if (id >= SM_COUNT)
+    {
+        return SM_DIR_NUMS;
+    }
+
+    GPIO_PinState current_state = HAL_GPIO_ReadPin(sm_hw_table[id].dir_port, sm_hw_table[id].dir_pin);
+
+    return (current_state == sm_hw_table[id].forward_pin ? SM_DIR_FORWARD : SM_DIR_REVERSE);
+}
+
+/**
+ * @brief 设置电机速度档位
+ * @param id 电机ID
+ * @param speed 合法值1~10
+ */
+void SM_SetSpeed(uint8_t id, uint8_t speed)
+{
+    if (id >= SM_COUNT || speed > SPEED_CURVE_SIZE || speed == 0)
+    {
+        return;
+    }
+    sm_vars[id].speed = speed - 1;
+}
+
+/**
+ * 获取电机速度档位
+ * @param id 电机ID
+ * @return 速度档位
+ */
+uint8_t SM_GetSpeed(uint8_t id)
+{
+    if (id >= SM_COUNT)
+    {
+        return 0xFF;
+    }
+
+    return sm_vars[id].speed + 1;
+}
+
+/**
+ * @brief 限位停止电机的接口
+ *
+ * @param id
+ */
+void SM_StopByLimit(uint8_t id)
+{
+    if (id >= SM_COUNT)
+    {
+        return;
+    }
+
+    BaseType_t need_report = pdFALSE;
+    SM_Report_t report = {0};
+    TickType_t now_tick = xTaskGetTickCount();
+
+    taskENTER_CRITICAL();
+    if (sm_vars[id].state != SM_STATE_IDLE)
+    {
+        HAL_TIM_Base_Stop_IT(sm_hw_table[id].timer);
+        __HAL_TIM_SET_COUNTER(sm_hw_table[id].timer, 0); // 重置计数器
+        sm_vars[id].toggle_cnt = 0;
+        sm_vars[id].step_cnt = 0;
+        sm_vars[id].state = SM_STATE_IDLE;
+        sm_vars[id].stop_type = SM_STOP_LIMIT;
+        sm_vars[id].stop_tick = now_tick;
+
+        report.id = id;
+        report.stop_type = sm_vars[id].stop_type;
+        need_report = pdTRUE;
+    }
+    taskEXIT_CRITICAL();
+
+    if (need_report && sm_report_queue != NULL)
+    {
+        xQueueSend(sm_report_queue, &report, pdMS_TO_TICKS(200));
+    }
+}
+
+/**
+ * @brief 电机上报动作
+ * @param id
+ * @param stop_type
+ * @return __weak
+ */
+__weak void SM_ReportAction(uint8_t id, SM_StopType_e stop_type)
+{
+    UNUSED(id);
+    UNUSED(stop_type);
+}
