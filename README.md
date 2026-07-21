@@ -175,7 +175,7 @@ SM_SetSpeed(SM_ID_X_AXIS, 5);
 | `SM_StopContinuous(id)` | 停止连续运转的电机 |
 | `SM_GetState(id)` | 获取电机状态（IDLE/READY/RUNNING） |
 | `SM_GetDir(id)` | 获取电机当前方向 |
-| `SM_SetSpeed(id, speed)` | 设置速度档位（1~10） |
+| `SM_SetSpeed(id, speed)` | 设置速度档位（1~10），运行中立即生效 |
 | `SM_GetSpeed(id)` | 获取当前速度档位 |
 | `SM_StopByLimit(id)` | 限位触发停止（由限位模块调用） |
 | `SM_ReportAction(id, stop_type)` | 完成回调（`__weak`，用户重写） |
