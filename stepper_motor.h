@@ -47,6 +47,7 @@ typedef struct
 
     TIM_HandleTypeDef* timer;
     uint8_t continuous;// 0=按步数运行, 1=连续运转
+    uint8_t no_sleep;  // 1=永不自动休眠（如垂直轴需保持电流）
 } SM_HwConfig_t;
 
 /**
@@ -89,6 +90,16 @@ uint8_t SM_GetSpeed(uint8_t id);
  * @brief 限位触发停止电机（由限位模块调用）
  */
 void SM_StopByLimit(uint8_t id);
+
+/**
+ * @brief 唤醒电机（使能并保持电流，暂停自动休眠）
+ */
+void SM_Wake(uint8_t id);
+
+/**
+ * @brief 休眠电机（失能并释放电流，恢复自动休眠机制）
+ */
+void SM_Sleep(uint8_t id);
 
 /**
  * @brief 电机动作完成回调（__weak，用户重写以处理事件）

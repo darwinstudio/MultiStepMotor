@@ -111,7 +111,7 @@ const SM_HwConfig_t sm_hw_table[SM_COUNT] = {
         .clk_port = MOTOR_CLK_Y_GPIO_Port, .clk_pin = MOTOR_CLK_Y_Pin,
         .dir_port = MOTOR_DIR_Y_GPIO_Port, .dir_pin = MOTOR_DIR_Y_Pin,
         .forward_pin = GPIO_PIN_RESET, .reverse_pin = GPIO_PIN_SET,
-        .timer = &htim4, .continuous = 0,
+        .timer = &htim4, .continuous = 0, .no_sleep = 1,  // 垂直轴，需保持电流
     },
     [SM_ID_PUMP] = {
         .sw_port = MOTOR_SW_P_GPIO_Port,  .sw_pin = MOTOR_SW_P_Pin,
@@ -178,6 +178,8 @@ SM_SetSpeed(SM_ID_X_AXIS, 5);
 | `SM_SetSpeed(id, speed)` | 设置速度档位（1~10），运行中立即生效 |
 | `SM_GetSpeed(id)` | 获取当前速度档位 |
 | `SM_StopByLimit(id)` | 限位触发停止（由限位模块调用） |
+| `SM_Wake(id)` | 唤醒电机（使能保持电流，暂停自动休眠） |
+| `SM_Sleep(id)` | 休眠电机（失能释放电流，恢复自动休眠） |
 | `SM_ReportAction(id, stop_type)` | 完成回调（`__weak`，用户重写） |
 
 ## 硬件接线要求

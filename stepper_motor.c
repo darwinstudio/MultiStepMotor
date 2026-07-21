@@ -13,6 +13,7 @@ typedef struct
     uint8_t toggle_cnt;// CLK翻转计数
     uint8_t speed;// 速度索引
     TickType_t stop_tick;// 停止时间
+    uint8_t auto_sleep_disable;// 1=暂停自动休眠（SM_Wake设置，SM_Run清除）
 } SM_Vars_t;
 
 typedef struct
@@ -181,6 +182,11 @@ static void sm_delay_sleep_poll(void)
 
     for (uint8_t id = 0; id < SM_COUNT; id++)
     {
+        if (sm_hw_table[id].no_sleep || sm_vars[id].auto_sleep_disable)
+        {
+            continue;
+        }
+
         taskENTER_CRITICAL();
         if (sm_vars[id].state != SM_STATE_IDLE)
         {
@@ -287,6 +293,7 @@ void SM_Run(uint8_t id, uint8_t dir, uint32_t steps)
     sm_vars[id].stop_type = SM_STOP_NONE;
     sm_vars[id].toggle_cnt = 0;
     sm_vars[id].step_cnt = 0;
+    sm_vars[id].auto_sleep_disable = 0;// 回归正常自动休眠队列
 
     taskEXIT_CRITICAL();
 
@@ -443,6 +450,39 @@ void SM_StopByLimit(uint8_t id)
     {
         xQueueSend(sm_report_queue, &report, pdMS_TO_TICKS(200));
     }
+}
+
+/**
+ * @brief 唤醒电机（使能并保持电流，暂停自动休眠）
+ * @param id
+ */
+void SM_Wake(uint8_t id)
+{
+    if (id >= SM_COUNT)
+    {
+        return;
+    }
+
+    sm_vars[id].auto_sleep_disable = 1;
+    HAL_GPIO_WritePin(sm_hw_table[id].clk_port, sm_hw_table[id].clk_pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(sm_hw_table[id].sw_port, sm_hw_table[id].sw_pin, GPIO_PIN_RESET);
+    sm_vars[id].stop_tick = xTaskGetTickCount();
+}
+
+/**
+ * @brief 休眠电机（失能并释放电流，恢复自动休眠机制）
+ * @param id
+ */
+void SM_Sleep(uint8_t id)
+{
+    if (id >= SM_COUNT)
+    {
+        return;
+    }
+
+    sm_vars[id].auto_sleep_disable = 0;
+    HAL_GPIO_WritePin(sm_hw_table[id].sw_port, sm_hw_table[id].sw_pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(sm_hw_table[id].clk_port, sm_hw_table[id].clk_pin, GPIO_PIN_RESET);
 }
 
 /**
