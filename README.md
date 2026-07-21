@@ -190,6 +190,14 @@ SM_SetSpeed(SM_ID_X_AXIS, 5);
 | CLK | 脉冲引脚（定时器中断翻转） |
 | DIR | 方向引脚 |
 
+## STM32CubeMX 定时器配置注意事项
+
+使用本库时，必须将电机所用定时器的 **Period 设为 0**。
+
+STM32CubeMX 默认将 Period 设为最大值（16 位定时器为 65535，32 位定时器为 4294967295）。由于定时器开启了 Auto-Reload Preload（ARPE），代码中通过 `HAL_TIM` 设置的 ARR 值要到**下一个更新事件**才生效。如果 Period 保持默认最大值，定时器首次运行需要先计数到最大值才会触发更新事件加载新周期——32 位定时器在 72MHz 下需要约 59 秒，表现为电机启动后长时间无动作。
+
+将 Period 设为 0 后，`SM_Init` 中 `__HAL_TIM_SET_AUTORELOAD` 写入的值会在第一个计数周期即生效。
+
 ## 依赖
 
 - STM32 HAL 库（GPIO、TIM）
