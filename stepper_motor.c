@@ -35,6 +35,11 @@ __weak const SM_HwConfig_t sm_hw_table[SM_COUNT] = {0};
 static volatile SM_Vars_t sm_vars[SM_COUNT] = {0}; // 所有运行时状态集中管理
 
 static QueueHandle_t sm_report_queue = NULL;
+static StaticQueue_t sm_report_queue_struct;
+static uint8_t sm_report_queue_buf[SM_COUNT * sizeof(SM_Report_t)];
+
+static StackType_t sm_task_stack[SM_TASK_STACK_SIZE];
+static StaticTask_t sm_task_struct;
 
 /**
  * @brief 启动电机对应的定时器
@@ -256,12 +261,12 @@ void SM_Init(void)
         }
     }
 
-    sm_report_queue = xQueueCreate(SM_COUNT, sizeof(SM_Report_t));
+    sm_report_queue = xQueueCreateStatic(SM_COUNT, sizeof(SM_Report_t), sm_report_queue_buf, &sm_report_queue_struct);
     if (sm_report_queue == NULL)
     {
         return;
     }
-    xTaskCreate(task_entry, "sm", SM_TASK_STACK_SIZE, NULL, SM_TASK_PRIORITY, NULL);
+    xTaskCreateStatic(task_entry, "sm", SM_TASK_STACK_SIZE, NULL, SM_TASK_PRIORITY, sm_task_stack, &sm_task_struct);
 }
 
 /**
