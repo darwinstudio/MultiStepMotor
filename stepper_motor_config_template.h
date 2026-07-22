@@ -14,19 +14,19 @@
 
 // 以下为可选覆盖的默认值
 #ifndef SM_DEFAULT_SPEED
-#define SM_DEFAULT_SPEED    2       // 默认速度档位（1~10）
+#define SM_DEFAULT_SPEED 2 // 默认速度档位（1~10）
 #endif
 
 #ifndef SLEEP_TIMEOUT_MS
-#define SLEEP_TIMEOUT_MS    3000    // 电机休眠超时时间(ms)
+#define SLEEP_TIMEOUT_MS 3000 // 电机休眠超时时间(ms)
 #endif
 
 #ifndef SM_TASK_STACK_SIZE
-#define SM_TASK_STACK_SIZE  512
+#define SM_TASK_STACK_SIZE 512
 #endif
 
 #ifndef SM_TASK_PRIORITY
-#define SM_TASK_PRIORITY    5
+#define SM_TASK_PRIORITY 5
 #endif
 
 #endif /* __STEPPER_MOTOR_CONFIG_H_ */

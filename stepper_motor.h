@@ -1,11 +1,12 @@
 #ifndef __STEPPER_MOTOR_H_
 #define __STEPPER_MOTOR_H_
 
-#include <stdint.h>
 #include "stepper_motor_config.h"
+#include <stdint.h>
 
 // 电机状态
-typedef enum {
+typedef enum
+{
     SM_STATE_IDLE,
     SM_STATE_READY,
     SM_STATE_RUNNING,
@@ -13,23 +14,26 @@ typedef enum {
 } SM_State_e;
 
 // 电机方向
-typedef enum {
+typedef enum
+{
     SM_DIR_FORWARD,
     SM_DIR_REVERSE,
     SM_DIR_NUMS,
 } SM_Dir_e;
 
 // 电机停止类型
-typedef enum {
+typedef enum
+{
     SM_STOP_NONE,
     SM_STOP_NORMAL, // 到达目标步数
-    SM_STOP_LIMIT, // 限位触发停止
-    SM_STOP_BUSY, // 电机忙
+    SM_STOP_LIMIT,  // 限位触发停止
+    SM_STOP_BUSY,   // 电机忙
     SM_STOP_NUMS,
 } SM_StopType_e;
 
 // 电机硬件接口结构体
-typedef struct {
+typedef struct
+{
     GPIO_TypeDef *sw_port;
     uint16_t sw_pin;
 
@@ -42,7 +46,7 @@ typedef struct {
 
     TIM_HandleTypeDef *timer;
     uint8_t continuous; // 0=按步数运行, 1=连续运转
-    uint8_t no_sleep; // 1=永不自动休眠（如垂直轴需保持电流）
+    uint8_t no_sleep;   // 1=永不自动休眠（如垂直轴需保持电流）
 } SM_HwConfig_t;
 
 // 硬件配置表，用户必须在自己的项目中提供定义
