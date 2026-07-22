@@ -1,7 +1,6 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "queue.h"
-#include "stepper_motor_config.h"
 #include "stepper_motor.h"
 
 // 电机控制变量集合结构体

@@ -2,6 +2,7 @@
 #define __STEPPER_MOTOR_H_
 
 #include <stdint.h>
+#include "stepper_motor_config.h"
 
 // 电机状态
 typedef enum {
