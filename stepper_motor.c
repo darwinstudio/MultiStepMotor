@@ -249,7 +249,7 @@ void SM_Run(uint8_t id, uint8_t dir, uint32_t steps) {
     taskEXIT_CRITICAL();
 
     // 设置电机方向
-    GPIO_PinState set_pin = (dir == SM_DIR_FORWARD ? sm_hw_table[id].forward_pin : sm_hw_table[id].reverse_pin);
+    GPIO_PinState set_pin = (dir == SM_DIR_FORWARD ? sm_hw_table[id].forward_pin : (GPIO_PinState)(!sm_hw_table[id].forward_pin));
     HAL_GPIO_WritePin(sm_hw_table[id].dir_port, sm_hw_table[id].dir_pin, set_pin);
     // 使能电机
     HAL_GPIO_WritePin(sm_hw_table[id].sw_port, sm_hw_table[id].sw_pin, GPIO_PIN_RESET);

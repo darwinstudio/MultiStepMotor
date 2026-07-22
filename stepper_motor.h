@@ -39,7 +39,6 @@ typedef struct {
     GPIO_TypeDef *dir_port;
     uint16_t dir_pin;
     GPIO_PinState forward_pin;
-    GPIO_PinState reverse_pin;
 
     TIM_HandleTypeDef *timer;
     uint8_t continuous; // 0=按步数运行, 1=连续运转

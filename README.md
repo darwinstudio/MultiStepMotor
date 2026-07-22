@@ -100,21 +100,21 @@ const SM_HwConfig_t sm_hw_table[SM_COUNT] = {
         .sw_port = MOTOR_SW_X_GPIO_Port,  .sw_pin = MOTOR_SW_X_Pin,
         .clk_port = MOTOR_CLK_X_GPIO_Port, .clk_pin = MOTOR_CLK_X_Pin,
         .dir_port = MOTOR_DIR_X_GPIO_Port, .dir_pin = MOTOR_DIR_X_Pin,
-        .forward_pin = GPIO_PIN_RESET, .reverse_pin = GPIO_PIN_SET,
+        .forward_pin = GPIO_PIN_RESET,
         .timer = &htim3, .continuous = 0,
     },
     [SM_ID_Y_AXIS] = {
         .sw_port = MOTOR_SW_Y_GPIO_Port,  .sw_pin = MOTOR_SW_Y_Pin,
         .clk_port = MOTOR_CLK_Y_GPIO_Port, .clk_pin = MOTOR_CLK_Y_Pin,
         .dir_port = MOTOR_DIR_Y_GPIO_Port, .dir_pin = MOTOR_DIR_Y_Pin,
-        .forward_pin = GPIO_PIN_RESET, .reverse_pin = GPIO_PIN_SET,
+        .forward_pin = GPIO_PIN_RESET,
         .timer = &htim4, .continuous = 0, .no_sleep = 1,  // 垂直轴，需保持电流
     },
     [SM_ID_PUMP] = {
         .sw_port = MOTOR_SW_P_GPIO_Port,  .sw_pin = MOTOR_SW_P_Pin,
         .clk_port = MOTOR_CLK_P_GPIO_Port, .clk_pin = MOTOR_CLK_P_Pin,
         .dir_port = MOTOR_DIR_P_GPIO_Port, .dir_pin = MOTOR_DIR_P_Pin,
-        .forward_pin = GPIO_PIN_SET, .reverse_pin = GPIO_PIN_RESET,
+        .forward_pin = GPIO_PIN_SET,
         .timer = &htim5, .continuous = 1,  // 连续运转模式
     },
 };
