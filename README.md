@@ -24,9 +24,9 @@
 
 ```
 MultiStepMotor/
-├── stepper_motor.h          # 公开 API
-├── stepper_motor.c          # 通用实现
-└── stepper_motor_config.h   # 默认配置（用户覆盖）
+├── stepper_motor.h                # 公开 API
+├── stepper_motor.c                # 通用实现
+└── stepper_motor_config_template.h # 配置模板（复制到自己项目并重命名）
 ```
 
 ## 集成方式
@@ -39,7 +39,7 @@ git submodule add git@github.com:darwinstudio/MultiStepMotor.git Middlewares/Mul
 
 ### 2. 创建用户配置文件
 
-在你的项目中创建 `stepper_motor_config.h`，通过 CMake include 路径顺序覆盖库内的默认配置：
+将库中的 `stepper_motor_config_template.h` 复制到你的项目中，重命名为 `stepper_motor_config.h`，然后根据实际硬件修改。通过 CMake include 路径顺序，用户的同名文件会优先于库内文件被找到：
 
 ```
 your_project/

@@ -12,11 +12,11 @@ Three files, all under the repo root:
 
 - **stepper_motor.h** — Public API and type definitions (SM_HwConfig_t, enums for state/direction/stop-type)
 - **stepper_motor.c** — All implementation: timer ISR pulse generation, FreeRTOS task for sleep management and completion callbacks, motor state machine
-- **stepper_motor_config.h** — Default configuration with `#ifndef` guards so users can override via include-path priority
+- **stepper_motor_config_template.h** — Configuration template; users copy it as `stepper_motor_config.h` in their own project, which takes priority via include-path order
 
 ### Key Design Patterns
 
-**Config override via include path**: Users create their own `stepper_motor_config.h` with `SM_COUNT`, `SM_Id_e`, and `sm_hw_table[]`. CMake places the user's Config/ directory before the library's include path, so the user's file wins. The library's copy provides only defaults for optional macros.
+**Config override via include path**: The library ships `stepper_motor_config_template.h` as a starting point. Users copy it to their project as `stepper_motor_config.h` with `SM_COUNT`, `SM_Id_e`, and `sm_hw_table[]`. CMake places the user's Config/ directory before the library's include path, so the user's file wins. The library's template provides only defaults for optional macros.
 
 **Hardware abstraction via config table**: `SM_HwConfig_t` maps each motor ID to its GPIO pins, timer handle, and continuous-mode flag. No direct hardware references in the library code — everything goes through `sm_hw_table[]`.
 

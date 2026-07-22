@@ -4,8 +4,8 @@
 #include "main.h"
 #include "tim.h"
 
-// 此文件为默认配置，用户应复制到自己项目中覆盖
-// 通过CMake include路径顺序，用户的同名文件会优先被找到
+// 配置模板 — 复制到你的项目中，重命名为 stepper_motor_config.h，然后按需修改
+// 通过CMake include路径顺序，用户的 stepper_motor_config.h 会优先于本文件被找到
 
 // 用户必须在自己的配置文件中定义以下内容：
 //   SM_COUNT          - 电机数量
