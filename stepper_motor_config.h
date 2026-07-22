@@ -10,7 +10,7 @@
 // 用户必须在自己的配置文件中定义以下内容：
 //   SM_COUNT          - 电机数量
 //   SM_Id_e           - 电机编号枚举
-//   sm_hw_table[]     - 硬件配置表（extern声明 + .c中定义）
+//   sm_hw_table[]     - 硬件配置表（.c中定义，声明已在stepper_motor.h中提供）
 
 // 以下为可选覆盖的默认值
 #ifndef SM_DEFAULT_SPEED

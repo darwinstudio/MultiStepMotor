@@ -86,9 +86,6 @@ typedef enum
     SM_ID_PUMP,
 } SM_Id_e;
 
-// 硬件配置表声明
-extern const SM_HwConfig_t sm_hw_table[SM_COUNT];
-
 #endif
 ```
 
