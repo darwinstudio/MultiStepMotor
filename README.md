@@ -17,16 +17,16 @@
 - 限位触发立即停止，带消抖和报告机制
 - 支持按步数运行和连续运转（如蠕动泵）
 - 完成事件通过 `__weak` 回调通知应用层
+- FreeRTOS 任务和队列采用静态分配，避免动态内存碎片
 - 与硬件 GPIO/Timer 解耦，通过配置表适配不同项目
 
 ## 文件结构
 
 ```
 MultiStepMotor/
-└── stepper_motor/
-    ├── stepper_motor.h          # 公开 API
-    ├── stepper_motor.c          # 通用实现
-    └── stepper_motor_config.h   # 默认配置（用户覆盖）
+├── stepper_motor.h          # 公开 API
+├── stepper_motor.c          # 通用实现
+└── stepper_motor_config.h   # 默认配置（用户覆盖）
 ```
 
 ## 集成方式
@@ -53,11 +53,11 @@ your_project/
 **CMakeLists.txt:**
 
 ```cmake
-add_subdirectory(Middlewares/MultiStepMotor/stepper_motor)
+add_subdirectory(Middlewares/MultiStepMotor)
 
 target_include_directories(my_app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/Config                              # 排在前面，覆盖库内同名文件
-    ${CMAKE_CURRENT_SOURCE_DIR}/Middlewares/MultiStepMotor/stepper_motor
+    ${CMAKE_CURRENT_SOURCE_DIR}/Middlewares/MultiStepMotor
 )
 ```
 
