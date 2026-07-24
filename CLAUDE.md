@@ -28,7 +28,7 @@ Three files, all under the repo root:
 
 ### Speed Control
 
-10 speed levels indexed 0–9 in `speed_curve_lut[]`. The LUT maps to timer auto-reload values in µs. Speed index is set per-motor via `SM_SetSpeed(id, speed)` where speed is 1–10 (converted to 0-based internally). Changing speed on a running motor takes effect on next `SM_Run()`.
+10 speed levels indexed 0–9 in `sm_pulse_period_us[]`, mapping to timer auto-reload values in µs. Speed index is set per-motor via `SM_SetSpeed(id, speed)` where speed is 1–10 (converted to 0-based internally). Changing speed on a running motor takes effect immediately (next timer interrupt); speed is also read when `SM_Run` starts a new move.
 
 ## Conventions
 

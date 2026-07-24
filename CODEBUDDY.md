@@ -36,7 +36,7 @@ The ISR sends `SM_Report_t` to a queue; a FreeRTOS task polls it and calls `SM_R
 The task polls all motors every 10 ms. If a motor has been idle for `SLEEP_TIMEOUT_MS` (default 3 s), it disables the motor (SW pin high) and resets CLK. Motors with `no_sleep = 1` never auto-sleep (e.g. vertical axes that must hold current).
 
 ### Speed Control
-10 speed levels indexed 0–9 in `sm_pulse_period_us[]`, mapping to timer auto-reload values in µs (50 µs ~ 450 µs period). Speed index is set per-motor via `SM_SetSpeed(id, speed)` where `speed` is 1–10 (converted to 0-based internally). Changing speed on a running motor takes effect on the next `SM_Run()`.
+10 speed levels indexed 0–9 in `sm_pulse_period_us[]`, mapping to timer auto-reload values in µs (50 µs ~ 450 µs period). Speed index is set per-motor via `SM_SetSpeed(id, speed)` where `speed` is 1–10 (converted to 0-based internally). Changing speed on a running motor takes effect immediately (next timer interrupt); speed is also read when `SM_Run` starts a new move.
 
 ## STM32CubeMX Timer Requirements (critical)
 

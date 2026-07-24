@@ -22,11 +22,17 @@ typedef struct
     SM_StopType_e stop_type; // 电机停止类型
 } SM_Report_t;
 
-#define SPEED_CURVE_SIZE 10 // 速度档位
+#define SPEED_CURVE_SIZE 10 // 速度档位(合法档位1~10，内部索引0~9)
 
 // 速度档位对应的定时器中断周期(µs)，即步进脉冲半周期
-// 索引0~2: 旧版3档兼容(低速档)；索引3~9: 扩展档位(高速档)
 static const uint16_t sm_pulse_period_us[SPEED_CURVE_SIZE] = {150, 300, 450, 50, 75, 100, 125, 175, 200, 225};
+
+// 编译期校验：SM_DEFAULT_SPEED 必须落在合法档位 1~10，否则 sm_vars[].speed 会越界
+// 读取 sm_pulse_period_us[]（大小 SPEED_CURVE_SIZE，索引 0~9），造成未定义行为。
+// 放在此处可在用户误配时直接构建失败，而非运行时静默越界。
+#if (SM_DEFAULT_SPEED < 1) || (SM_DEFAULT_SPEED > SPEED_CURVE_SIZE)
+#error "SM_DEFAULT_SPEED must be in range 1..10 (SPEED_CURVE_SIZE)"
+#endif
 
 static volatile SM_Vars_t sm_vars[SM_COUNT] = {0}; // 所有运行时状态集中管理
 
@@ -139,11 +145,16 @@ static BaseType_t sm_hw_is_valid(uint8_t id)
  */
 static void stop_motor_from_isr(uint8_t id)
 {
+    // 用 ISR 临界区包住"停定时器 + 判定 stop_type + 上报"整段，
+    // 使其与 SM_StopByLimit 的 ISR 路径互斥，避免限位中断在 reset_motor_to_idle
+    // 执行中途抢占，导致 stop_type 被改写为 LIMIT 后又重复上报。
+    UBaseType_t saved_interrupt_status = taskENTER_CRITICAL_FROM_ISR();
+
     reset_motor_to_idle(id, pdTRUE);
 
     if (!sm_hw_table[id].continuous) // 连续运转的电机不发送报告
     {
-        // 如果被设置了，那就是限位已经停止了
+        // 若 stop_type 已被限位中断置为 LIMIT，则保持，不再改写为 NORMAL
         if (sm_vars[id].stop_type == SM_STOP_NONE)
         {
             sm_vars[id].stop_type = SM_STOP_NORMAL;
@@ -151,6 +162,8 @@ static void stop_motor_from_isr(uint8_t id)
 
         send_report_isr_aware(id, sm_vars[id].stop_type, pdTRUE);
     }
+
+    taskEXIT_CRITICAL_FROM_ISR(saved_interrupt_status);
 }
 
 /**
@@ -227,9 +240,9 @@ static void sm_timer_continuous_callback(TIM_HandleTypeDef *htim)
 }
 
 /**
- * @brief 延时睡眠电机，防止停不稳
+ * @brief 轮询所有空闲超时的电机并执行自动休眠
  */
-static void sm_delay_sleep_poll(void)
+static void sm_auto_sleep_poll(void)
 {
     const uint32_t now_tick = xTaskGetTickCount();
 
@@ -240,13 +253,11 @@ static void sm_delay_sleep_poll(void)
             continue;
         }
 
-        taskENTER_CRITICAL();
+        // 单字节 volatile 读取本身原子，无需临界区
         if (sm_vars[id].state != SM_STATE_IDLE)
         {
-            taskEXIT_CRITICAL();
             continue;
         }
-        taskEXIT_CRITICAL();
 
         if (HAL_GPIO_ReadPin(sm_hw_table[id].sw_port, sm_hw_table[id].sw_pin) != GPIO_PIN_RESET)
         {
@@ -272,7 +283,7 @@ static void task_entry(void *para)
     SM_Report_t report;
     for (;;)
     {
-        sm_delay_sleep_poll();
+        sm_auto_sleep_poll();
 
         if (xQueueReceive(sm_report_queue, &report, 0) == pdPASS)
         {
@@ -322,7 +333,10 @@ void SM_Init(void)
  */
 void SM_Run(uint8_t id, uint8_t dir, uint32_t steps)
 {
-    if (id >= SM_COUNT || !sm_hw_is_valid(id) || dir >= SM_DIR_NUMS || steps == 0)
+    // 仅任务上下文可调用：内部会 vTaskDelay 使能电机，且调用 xQueueSend，
+    // 若在中断中调用会导致调度器断言/HardFault。ISR 场景请用 SM_StopByLimit 等。
+    if (xPortIsInsideInterrupt() ||
+        id >= SM_COUNT || !sm_hw_is_valid(id) || dir >= SM_DIR_NUMS || steps == 0)
     {
         return;
     }
@@ -530,6 +544,13 @@ void SM_Wake(uint8_t id)
 void SM_Sleep(uint8_t id)
 {
     if (id >= SM_COUNT || !sm_hw_is_valid(id))
+    {
+        return;
+    }
+
+    // 仅 IDLE 状态允许休眠；运转中调用 Sleep 视为误用，直接返回，
+    // 避免"驱动已失能但定时器仍在跑、状态机仍 RUNNING"的软硬件失同步。
+    if (sm_vars[id].state != SM_STATE_IDLE)
     {
         return;
     }

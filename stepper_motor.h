@@ -61,6 +61,8 @@ void SM_Init(void);
 
 /**
  * @brief 启动电机运行指定步数
+ * @note 仅任务上下文调用（内部会使能电机并阻塞约 5ms 等待驱动就绪，
+ *       且调用 xQueueSend，不可从中断上下文调用）。
  */
 void SM_Run(uint8_t id, uint8_t dir, uint32_t steps);
 
@@ -102,6 +104,7 @@ void SM_Wake(uint8_t id);
 
 /**
  * @brief 休眠电机（失能并释放电流，恢复自动休眠机制）
+ * @note 仅在电机处于 IDLE 状态时生效；运转中调用会被忽略（需先停止电机）。
  */
 void SM_Sleep(uint8_t id);
 
