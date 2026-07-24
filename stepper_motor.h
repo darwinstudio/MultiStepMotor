@@ -10,6 +10,7 @@ typedef enum
     SM_STATE_IDLE,
     SM_STATE_READY,
     SM_STATE_RUNNING,
+    SM_STATE_INVALID, // 无效ID等错误返回
     SM_STATE_NUMS,
 } SM_State_e;
 
@@ -18,6 +19,7 @@ typedef enum
 {
     SM_DIR_FORWARD,
     SM_DIR_REVERSE,
+    SM_DIR_INVALID, // 无效ID等错误返回
     SM_DIR_NUMS,
 } SM_Dir_e;
 

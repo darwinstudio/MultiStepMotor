@@ -160,7 +160,7 @@ SM_SetSpeed(SM_ID_X_AXIS, 5);
 |----|--------|------|
 | `SM_DEFAULT_SPEED` | 2 | 默认速度档位（1~10） |
 | `SLEEP_TIMEOUT_MS` | 3000 | 电机休眠超时时间(ms) |
-| `SM_TASK_STACK_SIZE` | 512 | 电机任务栈大小(字节) |
+| `SM_TASK_STACK_SIZE` | 512 | 电机任务栈深度（单位：word，即 4 字节/项，非字节；用于 xTaskCreateStatic 的栈深度参数） |
 | `SM_TASK_PRIORITY` | 5 | 电机任务优先级 |
 
 ## API

@@ -30,9 +30,13 @@ static const uint16_t sm_pulse_period_us[SPEED_CURVE_SIZE] = {150, 300, 450, 50,
 
 static volatile SM_Vars_t sm_vars[SM_COUNT] = {0}; // 所有运行时状态集中管理
 
+// 报告队列容量：每电机至少 1 条完成报告，乘以 2 留余量（忙报告等），
+// 避免改为非阻塞发送后瞬时集中上报而丢弃
+#define SM_REPORT_QUEUE_LEN (SM_COUNT * 2)
+
 static QueueHandle_t sm_report_queue;
 static StaticQueue_t sm_report_queue_struct;
-static uint8_t sm_report_queue_buf[SM_COUNT * sizeof(SM_Report_t)];
+static uint8_t sm_report_queue_buf[SM_REPORT_QUEUE_LEN * sizeof(SM_Report_t)];
 
 static StackType_t sm_task_stack[SM_TASK_STACK_SIZE];
 static StaticTask_t sm_task_struct;
@@ -61,20 +65,81 @@ static void start_motor_timer(uint8_t id, uint16_t period_index)
 }
 
 /**
+ * @brief 将电机复位到确定的空闲状态
+ *
+ * 统一处理三条停止路径共有的"摆到已知空闲态"动作：停定时器、清计数器、
+ * CLK 拉低、清步数计数、置 IDLE、刷新 stop_tick。集中于此可避免某条路径
+ * 遗漏 CLK 复位等引脚安全操作。
+ *
+ * @param id     电机ID
+ * @param in_isr 是否处于中断上下文（pdTRUE/pdFALSE），用于选择 tick 获取方式
+ * @note 本函数不自带临界区，调用方需自行按上下文包好临界区
+ */
+static void reset_motor_to_idle(uint8_t id, BaseType_t in_isr)
+{
+    HAL_TIM_Base_Stop_IT(sm_hw_table[id].timer);
+    __HAL_TIM_SET_COUNTER(sm_hw_table[id].timer, 0); // 重置计数器，防止下次启动时残留值导致异常
+    HAL_GPIO_WritePin(sm_hw_table[id].clk_port, sm_hw_table[id].clk_pin, GPIO_PIN_RESET); // CLK 复位到确定电平
+    sm_vars[id].toggle_cnt = 0;
+    sm_vars[id].step_cnt = 0;
+    sm_vars[id].state = SM_STATE_IDLE;
+    sm_vars[id].stop_tick = in_isr ? xTaskGetTickCountFromISR() : xTaskGetTickCount();
+}
+
+/**
+ * @brief 上下文安全的完成事件上报
+ *
+ * 根据调用上下文选择 FreeRTOS 队列发送 API：中断上下文使用 xQueueSendFromISR
+ * + portYIELD_FROM_ISR，任务上下文使用 xQueueSend。
+ *
+ * @param id        电机ID
+ * @param stop_type 停止类型
+ * @param in_isr    是否处于中断上下文（pdTRUE/pdFALSE）
+ */
+static void send_report_isr_aware(uint8_t id, SM_StopType_e stop_type, BaseType_t in_isr)
+{
+    SM_Report_t report = {id, stop_type};
+
+    if (in_isr)
+    {
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        xQueueSendFromISR(sm_report_queue, &report, &xHigherPriorityTaskWoken);
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+    else
+    {
+        // 非阻塞发送：队列满则直接丢弃该报告（提示性报告，丢失影响小），避免公共 API 阻塞调用方
+        xQueueSend(sm_report_queue, &report, 0);
+    }
+}
+
+/**
+ * @brief 校验电机硬件配置是否有效（定时器与三组 GPIO 端口均非空）
+ *
+ * 用户配置错误（如端口填 NULL）会导致 HAL_GPIO_WritePin/ReadPin 触发 HardFault。
+ * 公共 API 在解引用 sm_hw_table[id] 前应先经此校验。
+ *
+ * @param id 电机ID（调用方需先保证 id < SM_COUNT）
+ * @return pdTRUE 配置有效；pdFALSE 存在 NULL 句柄（用户配置错误）
+ */
+static BaseType_t sm_hw_is_valid(uint8_t id)
+{
+    const SM_HwConfig_t *hw = &sm_hw_table[id];
+
+    return ((hw->timer != NULL) && (hw->sw_port != NULL) &&
+            (hw->clk_port != NULL) && (hw->dir_port != NULL))
+               ? pdTRUE
+               : pdFALSE;
+}
+
+/**
  * @brief 在中断中停止步进电机
  *
  * @param id
  */
 static void stop_motor_from_isr(uint8_t id)
 {
-    HAL_TIM_Base_Stop_IT(sm_hw_table[id].timer);
-    __HAL_TIM_SET_COUNTER(sm_hw_table[id].timer, 0); // 重置计数器，防止下次启动时残留值导致异常
-
-    HAL_GPIO_WritePin(sm_hw_table[id].clk_port, sm_hw_table[id].clk_pin, GPIO_PIN_RESET);
-    sm_vars[id].toggle_cnt = 0;
-    sm_vars[id].step_cnt = 0;
-    sm_vars[id].state = SM_STATE_IDLE;
-    sm_vars[id].stop_tick = xTaskGetTickCountFromISR();
+    reset_motor_to_idle(id, pdTRUE);
 
     if (!sm_hw_table[id].continuous) // 连续运转的电机不发送报告
     {
@@ -84,12 +149,7 @@ static void stop_motor_from_isr(uint8_t id)
             sm_vars[id].stop_type = SM_STOP_NORMAL;
         }
 
-        SM_Report_t report = {id, sm_vars[id].stop_type};
-        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-
-        xQueueSendFromISR(sm_report_queue, &report, &xHigherPriorityTaskWoken);
-
-        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+        send_report_isr_aware(id, sm_vars[id].stop_type, pdTRUE);
     }
 }
 
@@ -249,7 +309,7 @@ void SM_Init(void)
         }
     }
 
-    sm_report_queue = xQueueCreateStatic(SM_COUNT, sizeof(SM_Report_t), sm_report_queue_buf, &sm_report_queue_struct);
+    sm_report_queue = xQueueCreateStatic(SM_REPORT_QUEUE_LEN, sizeof(SM_Report_t), sm_report_queue_buf, &sm_report_queue_struct);
     xTaskCreateStatic(task_entry, "sm", SM_TASK_STACK_SIZE, NULL, SM_TASK_PRIORITY, sm_task_stack, &sm_task_struct);
 }
 
@@ -262,7 +322,7 @@ void SM_Init(void)
  */
 void SM_Run(uint8_t id, uint8_t dir, uint32_t steps)
 {
-    if (id >= SM_COUNT || dir >= SM_DIR_NUMS || steps == 0)
+    if (id >= SM_COUNT || !sm_hw_is_valid(id) || dir >= SM_DIR_NUMS || steps == 0)
     {
         return;
     }
@@ -273,7 +333,8 @@ void SM_Run(uint8_t id, uint8_t dir, uint32_t steps)
         taskEXIT_CRITICAL();
         SM_Report_t report = {id, SM_STOP_BUSY};
 
-        xQueueSend(sm_report_queue, &report, pdMS_TO_TICKS(200));
+        // 非阻塞发送：队列满则直接丢弃该 BUSY 报告，避免公共 API 阻塞调用方
+        xQueueSend(sm_report_queue, &report, 0);
         return;
     }
 
@@ -312,7 +373,7 @@ void SM_Run(uint8_t id, uint8_t dir, uint32_t steps)
  */
 void SM_StopContinuous(uint8_t id)
 {
-    if (id >= SM_COUNT || !sm_hw_table[id].continuous)
+    if (id >= SM_COUNT || !sm_hw_is_valid(id) || !sm_hw_table[id].continuous)
     {
         return;
     }
@@ -323,13 +384,7 @@ void SM_StopContinuous(uint8_t id)
     }
 
     taskENTER_CRITICAL();
-    HAL_TIM_Base_Stop_IT(sm_hw_table[id].timer);
-    __HAL_TIM_SET_COUNTER(sm_hw_table[id].timer, 0); // 重置计数器，防止下次启动时残留值导致异常
-
-    sm_vars[id].toggle_cnt = 0;
-    sm_vars[id].step_cnt = 0;
-    sm_vars[id].state = SM_STATE_IDLE;
-    sm_vars[id].stop_tick = xTaskGetTickCount();
+    reset_motor_to_idle(id, pdFALSE); // 连续电机停止不发送报告
     taskEXIT_CRITICAL();
 }
 
@@ -343,7 +398,7 @@ SM_State_e SM_GetState(uint8_t id)
 {
     if (id >= SM_COUNT)
     {
-        return SM_STATE_NUMS;
+        return SM_STATE_INVALID;
     }
     return sm_vars[id].state;
 }
@@ -356,9 +411,9 @@ SM_State_e SM_GetState(uint8_t id)
  */
 SM_Dir_e SM_GetDir(uint8_t id)
 {
-    if (id >= SM_COUNT)
+    if (id >= SM_COUNT || !sm_hw_is_valid(id))
     {
-        return SM_DIR_NUMS;
+        return SM_DIR_INVALID;
     }
 
     GPIO_PinState current_state = HAL_GPIO_ReadPin(sm_hw_table[id].dir_port, sm_hw_table[id].dir_pin);
@@ -410,35 +465,44 @@ uint8_t SM_GetSpeed(uint8_t id)
  */
 void SM_StopByLimit(uint8_t id)
 {
-    if (id >= SM_COUNT)
+    if (id >= SM_COUNT || !sm_hw_is_valid(id))
     {
         return;
     }
 
     BaseType_t need_report = pdFALSE;
-    SM_Report_t report = {0};
-    TickType_t now_tick = xTaskGetTickCount();
+    BaseType_t in_isr = xPortIsInsideInterrupt();
+    UBaseType_t saved_interrupt_status;
 
-    taskENTER_CRITICAL();
+    // 限位可能由 EXTI 中断调用，需按上下文选择临界区，使停止在 ISR 与任务两种上下文都安全
+    if (in_isr)
+    {
+        saved_interrupt_status = taskENTER_CRITICAL_FROM_ISR();
+    }
+    else
+    {
+        taskENTER_CRITICAL();
+    }
+
     if (sm_vars[id].state != SM_STATE_IDLE)
     {
-        HAL_TIM_Base_Stop_IT(sm_hw_table[id].timer);
-        __HAL_TIM_SET_COUNTER(sm_hw_table[id].timer, 0); // 重置计数器
-        sm_vars[id].toggle_cnt = 0;
-        sm_vars[id].step_cnt = 0;
-        sm_vars[id].state = SM_STATE_IDLE;
+        reset_motor_to_idle(id, in_isr);
         sm_vars[id].stop_type = SM_STOP_LIMIT;
-        sm_vars[id].stop_tick = now_tick;
-
-        report.id = id;
-        report.stop_type = sm_vars[id].stop_type;
         need_report = pdTRUE;
     }
-    taskEXIT_CRITICAL();
+
+    if (in_isr)
+    {
+        taskEXIT_CRITICAL_FROM_ISR(saved_interrupt_status);
+    }
+    else
+    {
+        taskEXIT_CRITICAL();
+    }
 
     if (need_report)
     {
-        xQueueSend(sm_report_queue, &report, pdMS_TO_TICKS(200));
+        send_report_isr_aware(id, SM_STOP_LIMIT, in_isr);
     }
 }
 
@@ -448,7 +512,7 @@ void SM_StopByLimit(uint8_t id)
  */
 void SM_Wake(uint8_t id)
 {
-    if (id >= SM_COUNT)
+    if (id >= SM_COUNT || !sm_hw_is_valid(id))
     {
         return;
     }
@@ -465,7 +529,7 @@ void SM_Wake(uint8_t id)
  */
 void SM_Sleep(uint8_t id)
 {
-    if (id >= SM_COUNT)
+    if (id >= SM_COUNT || !sm_hw_is_valid(id))
     {
         return;
     }

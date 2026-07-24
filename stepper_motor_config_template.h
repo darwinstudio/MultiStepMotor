@@ -22,7 +22,7 @@
 #endif
 
 #ifndef SM_TASK_STACK_SIZE
-#define SM_TASK_STACK_SIZE 512
+#define SM_TASK_STACK_SIZE 512 // 任务栈深度（单位：word，即 4 字节/项，非字节）；直接传给 xTaskCreateStatic 的 usStackDepth
 #endif
 
 #ifndef SM_TASK_PRIORITY
