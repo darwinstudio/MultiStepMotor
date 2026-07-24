@@ -70,6 +70,7 @@ static void stop_motor_from_isr(uint8_t id)
     HAL_TIM_Base_Stop_IT(sm_hw_table[id].timer);
     __HAL_TIM_SET_COUNTER(sm_hw_table[id].timer, 0); // 重置计数器，防止下次启动时残留值导致异常
 
+    HAL_GPIO_WritePin(sm_hw_table[id].clk_port, sm_hw_table[id].clk_pin, GPIO_PIN_RESET);
     sm_vars[id].toggle_cnt = 0;
     sm_vars[id].step_cnt = 0;
     sm_vars[id].state = SM_STATE_IDLE;
