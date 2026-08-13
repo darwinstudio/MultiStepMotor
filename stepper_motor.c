@@ -24,17 +24,11 @@ typedef struct
     SM_StopType_e stop_type; // 电机停止类型
 } SM_Report_t;
 
-#define SPEED_CURVE_SIZE 10 // 速度档位(合法档位1~10，内部索引0~9)
-#define SM_BASE_TICK_US 50  // 共享定时器基频周期(µs)，即 CLK 翻转的最小时间单位
+#define SPEED_CURVE_SIZE 10 // 速度档位数(合法档位1~10，内部索引0~9)；须与 SM_SPEED_PERIODS 条目数一致
 
-// 各速度档位对应的 CLK 翻转周期(µs)列表。共享定时器以 SM_BASE_TICK_US 固定周期
-// 运行，每个电机的实际翻转间隔 = 表值 / SM_BASE_TICK_US 个基频tick。用 X 宏保持
-// 单一数据源：既生成速度表数组，又用于逐档编译期整除校验。
-#define SM_SPEED_PERIODS(X) \
-    X(150) X(300) X(450) X(50) X(100) \
-    X(200) X(250) X(350) X(400) X(500)
-
-// 生成速度表数组
+// 速度表由用户配置的 X 宏 SM_SPEED_PERIODS 提供（见 stepper_motor_config_template.h）。
+// 共享定时器以 SM_BASE_TICK_US 固定周期运行，每个电机的实际翻转间隔 =
+// 表值 / SM_BASE_TICK_US 个基频tick。此处据该宏生成数组并逐档做编译期整除校验。
 #define SM_PERIOD_ENTRY(us) us,
 static const uint16_t sm_pulse_period_us[SPEED_CURVE_SIZE] = { SM_SPEED_PERIODS(SM_PERIOD_ENTRY) };
 #undef SM_PERIOD_ENTRY
@@ -44,7 +38,6 @@ static const uint16_t sm_pulse_period_us[SPEED_CURVE_SIZE] = { SM_SPEED_PERIODS(
 #define SM_CHECK_DIVISIBLE(us) _Static_assert((us) % SM_BASE_TICK_US == 0, "sm_pulse_period_us entry must be a multiple of SM_BASE_TICK_US");
 SM_SPEED_PERIODS(SM_CHECK_DIVISIBLE)
 #undef SM_CHECK_DIVISIBLE
-#undef SM_SPEED_PERIODS
 
 // 编译期校验：SM_DEFAULT_SPEED 必须落在合法档位 1~10，否则 sm_vars[].speed 会越界
 // 读取 sm_pulse_period_us[]（大小 SPEED_CURVE_SIZE，索引 0~9），造成未定义行为。

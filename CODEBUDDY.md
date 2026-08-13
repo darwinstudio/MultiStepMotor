@@ -28,13 +28,15 @@ MultiStepMotor 是一个面向 STM32 + FreeRTOS 嵌入式项目的轻量级多�
 - `SM_Id_e` — 电机编号枚举。
 - `sm_hw_table[]` — `const SM_HwConfig_t` 数组，按电机 ID 索引（在 `stepper_motor.h` 中声明为 `extern`）。
 
+另有**可选覆盖**项（在模板里给了默认值，用户可在自己的 `stepper_motor_config.h` 里覆盖）：`SM_DEFAULT_SPEED`、`SM_BASE_TICK_US`（共享定时器基频周期 µs）、`SM_SPEED_PERIODS`（各档 CLK 翻转周期的 X 宏列表，条目数须等于 `SPEED_CURVE_SIZE`）、`SLEEP_TIMEOUT_MS`、`SM_TASK_STACK_SIZE`、`SM_TASK_PRIORITY`。
+
 `SM_HwConfig_t` 把每个电机映射到它的 SW/CLK/DIR GPIO 端口+引脚、`forward_pin` 极性、一个 `TIM_HandleTypeDef *`，以及两个行为标志：`continuous`（1 = 连续/泵模式，不因步数停下）和 `no_sleep`（1 = 永不自动休眠，例如必须保持扭矩的垂直轴）。
 
 ## 架构（大局观）
 
 **运动由定时器中断驱动，而不是由任务驱动。** 每个电机的 `timer` 运行 `HAL_TIM_Base_Start_IT`；`HAL_TIM_PERIOD_ELAPSED_CB_ID` 回调翻转 CLK 引脚。**CLK 翻转 2 次 = 1 步。**
 
-**定时器共享：** 多个电机可以在 `sm_hw_table[]` 里指向同一个 `TIM_HandleTypeDef *`，共享一个定时器。定时器以固定基频（`SM_BASE_TICK_US = 50µs`）运行，每个电机按自己的速度档位分频：`tick_ticks = sm_pulse_period_us[档位] / SM_BASE_TICK_US`，ISR 里递减 `tick_cnt`，减到 0 才翻转一次 CLK 并重载。速度表 `sm_pulse_period_us[SPEED_CURVE_SIZE]` 存的是每个档位的 CLK 翻转周期（µs），必须是基频的整数倍（10 档合法速度，用户侧档位 1–10 对应数组下标 0–9）。
+**定时器共享：** 多个电机可以在 `sm_hw_table[]` 里指向同一个 `TIM_HandleTypeDef *`，共享一个定时器。定时器以固定基频（`SM_BASE_TICK_US`，默认 50µs，用户可在配置里覆盖）运行，每个电机按自己的速度档位分频：`tick_ticks = sm_pulse_period_us[档位] / SM_BASE_TICK_US`，ISR 里递减 `tick_cnt`，减到 0 才翻转一次 CLK 并重载。速度表 `sm_pulse_period_us[SPEED_CURVE_SIZE]` 存的是每个档位的 CLK 翻转周期（µs），由用户配置的 X 宏 `SM_SPEED_PERIODS` 提供，必须是基频的整数倍（10 档合法速度，用户侧档位 1–10 对应数组下标 0–9）。
 
 `SM_Init()` 对每个**唯一**的定时器句柄注册一次统一回调 `sm_group_timer_callback(htim)`（按句柄去重），该回调遍历所有共用此句柄的电机：
 - 步数模式：分频翻转 CLK、计步，当 `step_cnt >= target_steps` 时调用 `stop_motor_from_isr()`。
@@ -59,4 +61,4 @@ MultiStepMotor 是一个面向 STM32 + FreeRTOS 嵌入式项目的轻量级多�
 
 - 注释和文档用中文书写；改动代码注释时保持该约定。
 - `sm_vars[]` 保存每个电机的全部运行时状态；有一个编译期 `#error` 守卫强制 `1 <= SM_DEFAULT_SPEED <= SPEED_CURVE_SIZE`。
-- 速度表 `sm_pulse_period_us[]` 由 X 宏 `SM_SPEED_PERIODS` 单一数据源生成，并逐档用 `_Static_assert` 校验每档都是 `SM_BASE_TICK_US` 的整数倍（改速度值时只改宏列表，数组和校验会自动跟随）。
+- 速度表 `sm_pulse_period_us[]` 由用户配置的 X 宏 `SM_SPEED_PERIODS` 生成，并逐档用 `_Static_assert` 校验每档都是 `SM_BASE_TICK_US` 的整数倍（用户改速度值时只改宏列表，数组和校验自动跟随；非整数倍会编译期报错）。

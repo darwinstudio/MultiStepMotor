@@ -17,6 +17,19 @@
 #define SM_DEFAULT_SPEED 2 // 默认速度档位（1~10）
 #endif
 
+// 速度档位基频周期(µs)，所有档位的 CLK 翻转周期都必须是它的整数倍
+#ifndef SM_BASE_TICK_US
+#define SM_BASE_TICK_US 50
+#endif
+
+// 各速度档位的 CLK 翻转周期(µs)，X 宏形式（库据此生成速度表数组并逐档做编译期整除校验）。
+// 条目数必须等于 SPEED_CURVE_SIZE（当前为 10）。
+#ifndef SM_SPEED_PERIODS
+#define SM_SPEED_PERIODS(X) \
+    X(150) X(300) X(450) X(50) X(100) \
+    X(200) X(250) X(350) X(400) X(500)
+#endif
+
 #ifndef SLEEP_TIMEOUT_MS
 #define SLEEP_TIMEOUT_MS 3000 // 电机休眠超时时间(ms)
 #endif

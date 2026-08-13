@@ -160,6 +160,8 @@ SM_SetSpeed(SM_ID_X_AXIS, 5);
 | 宏 | 默认值 | 说明 |
 |----|--------|------|
 | `SM_DEFAULT_SPEED` | 2 | 默认速度档位（1~10） |
+| `SM_BASE_TICK_US` | 50 | 共享定时器基频周期(µs)，所有档位翻转周期须为其整数倍 |
+| `SM_SPEED_PERIODS` | 见模板 | 各速度档位的 CLK 翻转周期(µs)，X 宏形式；条目数须等于 `SPEED_CURVE_SIZE`（10） |
 | `SLEEP_TIMEOUT_MS` | 3000 | 电机休眠超时时间(ms) |
 | `SM_TASK_STACK_SIZE` | 512 | 电机任务栈深度（单位：word，即 4 字节/项，非字节；用于 xTaskCreateStatic 的栈深度参数） |
 | `SM_TASK_PRIORITY` | 5 | 电机任务优先级 |
