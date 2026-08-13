@@ -12,6 +12,8 @@ typedef struct
     uint32_t step_cnt;          // 电机运行步数计数 CLK翻转2次=1步
     uint8_t toggle_cnt;         // CLK翻转计数
     uint8_t speed;              // 速度索引
+    uint16_t tick_ticks;        // CLK翻转间隔（基频tick数），由速度档位换算
+    uint16_t tick_cnt;          // 运行中递减的基频tick计数，到0翻转CLK并重载
     TickType_t stop_tick;       // 停止时间
     uint8_t auto_sleep_disable; // 1=暂停自动休眠（SM_Wake设置，SM_Run清除）
 } SM_Vars_t;
@@ -23,9 +25,11 @@ typedef struct
 } SM_Report_t;
 
 #define SPEED_CURVE_SIZE 10 // 速度档位(合法档位1~10，内部索引0~9)
+#define SM_BASE_TICK_US 50  // 共享定时器基频周期(µs)，即 CLK 翻转的最小时间单位
 
-// 速度档位对应的定时器中断周期(µs)，即步进脉冲半周期
-static const uint16_t sm_pulse_period_us[SPEED_CURVE_SIZE] = {150, 300, 450, 50, 75, 100, 125, 175, 200, 225};
+// 各速度档位对应的 CLK 翻转周期(µs)。共享定时器以 SM_BASE_TICK_US 固定周期运行，
+// 每个电机的实际翻转间隔 = 本表值 / SM_BASE_TICK_US 个基频tick（表值须为其整数倍）。
+static const uint16_t sm_pulse_period_us[SPEED_CURVE_SIZE] = {150, 300, 450, 50, 100, 200, 250, 350, 400, 500};
 
 // 编译期校验：SM_DEFAULT_SPEED 必须落在合法档位 1~10，否则 sm_vars[].speed 会越界
 // 读取 sm_pulse_period_us[]（大小 SPEED_CURVE_SIZE，索引 0~9），造成未定义行为。
@@ -48,23 +52,52 @@ static StackType_t sm_task_stack[SM_TASK_STACK_SIZE];
 static StaticTask_t sm_task_struct;
 
 /**
- * @brief 启动电机对应的定时器
+ * @brief 判断与指定电机共享同一定时器的组内，是否还有 RUNNING 状态的电机
+ *
+ * 多电机可共享同一定时器。定时器"运行 ⟺ 组内至少一个电机 RUNNING"这一
+ * 不变量，由本函数支撑：启动/停止定时器都据此判断，避免互相干扰。
+ *
+ * @param id 电机ID（调用方需保证 id < SM_COUNT 且 timer 非空）
+ * @return pdTRUE 组内存在 RUNNING 电机；pdFALSE 组内全空闲
+ */
+static BaseType_t group_has_running(uint8_t id)
+{
+    for (uint8_t j = 0; j < SM_COUNT; j++)
+    {
+        if (j != id && sm_hw_table[j].timer == sm_hw_table[id].timer &&
+            sm_vars[j].state == SM_STATE_RUNNING)
+        {
+            return pdTRUE;
+        }
+    }
+    return pdFALSE;
+}
+
+/**
+ * @brief 启动电机（按速度档位换算分频间隔，必要时启动共享定时器）
  *
  * @param id
- * @param period_index
  */
-static void start_motor_timer(uint8_t id, uint16_t period_index)
+static void start_motor_timer(uint8_t id)
 {
-    if (sm_hw_table[id].timer == NULL || period_index >= SPEED_CURVE_SIZE)
+    if (sm_hw_table[id].timer == NULL)
     {
         return;
     }
 
-    __HAL_TIM_SET_AUTORELOAD(sm_hw_table[id].timer, sm_pulse_period_us[period_index]);
-    __HAL_TIM_SET_COUNTER(sm_hw_table[id].timer, 0); // 重置计数器，防止残留值导致首次更新事件异常
-    if (HAL_TIM_Base_Start_IT(sm_hw_table[id].timer) != HAL_OK)
+    // 按当前速度档位换算翻转间隔（基频tick数），装载分频计数器
+    sm_vars[id].tick_ticks = sm_pulse_period_us[sm_vars[id].speed] / SM_BASE_TICK_US;
+    sm_vars[id].tick_cnt = sm_vars[id].tick_ticks;
+
+    // 仅当组内无其他 RUNNING 电机时才启动共享定时器并清计数器；
+    // 组已在跑时启动新电机绝不能清计数器，否则会打乱其他电机的时序
+    if (!group_has_running(id))
     {
-        return; // 启动失败则不更新状态
+        __HAL_TIM_SET_COUNTER(sm_hw_table[id].timer, 0);
+        if (HAL_TIM_Base_Start_IT(sm_hw_table[id].timer) != HAL_OK)
+        {
+            return; // 启动失败则不更新状态
+        }
     }
 
     sm_vars[id].state = SM_STATE_RUNNING;
@@ -73,9 +106,10 @@ static void start_motor_timer(uint8_t id, uint16_t period_index)
 /**
  * @brief 将电机复位到确定的空闲状态
  *
- * 统一处理三条停止路径共有的"摆到已知空闲态"动作：停定时器、清计数器、
- * CLK 拉低、清步数计数、置 IDLE、刷新 stop_tick。集中于此可避免某条路径
- * 遗漏 CLK 复位等引脚安全操作。
+ * 统一处理三条停止路径共有的"摆到已知空闲态"动作：CLK 拉低、清步数/分频
+ * 计数、置 IDLE、刷新 stop_tick。共享定时器只在组内已无 RUNNING 电机时才
+ * 停止，避免停掉同组仍在运行的电机。集中于此可避免某条路径遗漏 CLK 复位等
+ * 引脚安全操作。
  *
  * @param id     电机ID
  * @param in_isr 是否处于中断上下文（pdTRUE/pdFALSE），用于选择 tick 获取方式
@@ -83,12 +117,20 @@ static void start_motor_timer(uint8_t id, uint16_t period_index)
  */
 static void reset_motor_to_idle(uint8_t id, BaseType_t in_isr)
 {
-    HAL_TIM_Base_Stop_IT(sm_hw_table[id].timer);
-    __HAL_TIM_SET_COUNTER(sm_hw_table[id].timer, 0); // 重置计数器，防止下次启动时残留值导致异常
+    // 先置 IDLE 并清本电机状态，再判断组内是否还有 RUNNING 电机，
+    // 以免把本电机自身算进组内运行计数
     HAL_GPIO_WritePin(sm_hw_table[id].clk_port, sm_hw_table[id].clk_pin, GPIO_PIN_RESET); // CLK 复位到确定电平
     sm_vars[id].toggle_cnt = 0;
     sm_vars[id].step_cnt = 0;
+    sm_vars[id].tick_cnt = 0;
     sm_vars[id].state = SM_STATE_IDLE;
+
+    if (!group_has_running(id))
+    {
+        HAL_TIM_Base_Stop_IT(sm_hw_table[id].timer);
+        __HAL_TIM_SET_COUNTER(sm_hw_table[id].timer, 0); // 重置计数器，防止下次启动时残留值导致异常
+    }
+
     sm_vars[id].stop_tick = in_isr ? xTaskGetTickCountFromISR() : xTaskGetTickCount();
 }
 
@@ -167,76 +209,55 @@ static void stop_motor_from_isr(uint8_t id)
 }
 
 /**
- * @brief 电机定时器回调函数（按步数运行）
- * @param htim
+ * @brief 共享定时器组回调（统一处理步数模式与连续模式）
+ *
+ * 一个定时器可被多个电机共享，回调按句柄匹配所有共用该定时器的电机并逐个
+ * 处理。每个电机以自身速度档位对应的 tick_ticks 分频翻转 CLK：步数模式计步
+ * 并在达标后停止，连续模式仅翻转 CLK。
+ *
+ * @param htim 触发中断的定时器句柄
  */
-static void sm_timer_callback(TIM_HandleTypeDef *htim)
+static void sm_group_timer_callback(TIM_HandleTypeDef *htim)
 {
-    uint8_t id;
-    for (id = 0; id < SM_COUNT; id++)
+    for (uint8_t id = 0; id < SM_COUNT; id++)
     {
-        if (sm_hw_table[id].timer != NULL && !sm_hw_table[id].continuous &&
-            htim->Instance == sm_hw_table[id].timer->Instance)
+        if (sm_hw_table[id].timer != htim)
         {
-            break;
+            continue;
+        }
+
+        // 只处理 RUNNING 电机；IDLE 电机跳过且不停定时器（定时器可能正服务组内其他电机）
+        if (sm_vars[id].state != SM_STATE_RUNNING)
+        {
+            continue;
+        }
+
+        // 按基频tick分频：递减到0才翻转CLK并重载
+        if (--sm_vars[id].tick_cnt > 0)
+        {
+            continue;
+        }
+        sm_vars[id].tick_cnt = sm_vars[id].tick_ticks;
+
+        HAL_GPIO_TogglePin(sm_hw_table[id].clk_port, sm_hw_table[id].clk_pin);
+
+        if (sm_hw_table[id].continuous)
+        {
+            continue; // 连续模式不计步，仅由 SM_StopContinuous 停止
+        }
+
+        sm_vars[id].toggle_cnt++;
+        if (sm_vars[id].toggle_cnt >= 2)
+        {
+            sm_vars[id].toggle_cnt = 0;
+            sm_vars[id].step_cnt++;
+
+            if (sm_vars[id].step_cnt >= sm_vars[id].target_steps)
+            {
+                stop_motor_from_isr(id);
+            }
         }
     }
-    if (id >= SM_COUNT)
-    {
-        return;
-    }
-
-    // 安全检查：只有电机处于RUNNING状态才处理脉冲
-    if (sm_vars[id].state != SM_STATE_RUNNING)
-    {
-        HAL_TIM_Base_Stop_IT(sm_hw_table[id].timer);
-        return;
-    }
-
-    HAL_GPIO_TogglePin(sm_hw_table[id].clk_port, sm_hw_table[id].clk_pin);
-
-    sm_vars[id].toggle_cnt++;
-
-    if (sm_vars[id].toggle_cnt >= 2)
-    {
-        sm_vars[id].toggle_cnt = 0;
-        sm_vars[id].step_cnt++;
-
-        if (sm_vars[id].step_cnt >= sm_vars[id].target_steps)
-        {
-            stop_motor_from_isr(id);
-        }
-    }
-}
-
-/**
- * @brief 连续运转电机专用的定时器回调
- * @param htim
- */
-static void sm_timer_continuous_callback(TIM_HandleTypeDef *htim)
-{
-    uint8_t id;
-    for (id = 0; id < SM_COUNT; id++)
-    {
-        if (sm_hw_table[id].timer != NULL && sm_hw_table[id].continuous &&
-            htim->Instance == sm_hw_table[id].timer->Instance)
-        {
-            break;
-        }
-    }
-    if (id >= SM_COUNT)
-    {
-        return;
-    }
-
-    // 安全检查：只有电机处于RUNNING状态才处理脉冲
-    if (sm_vars[id].state != SM_STATE_RUNNING)
-    {
-        HAL_TIM_Base_Stop_IT(sm_hw_table[id].timer);
-        return;
-    }
-
-    HAL_GPIO_TogglePin(sm_hw_table[id].clk_port, sm_hw_table[id].clk_pin);
 }
 
 /**
@@ -310,14 +331,23 @@ void SM_Init(void)
             continue;
         }
 
-        if (sm_hw_table[id].continuous)
+        // 每个唯一定时器只注册一次回调、设一次基频周期；多电机共享同一句柄时按句柄去重
+        BaseType_t already_registered = pdFALSE;
+        for (uint8_t j = 0; j < id; j++)
         {
-            HAL_TIM_RegisterCallback(sm_hw_table[id].timer, HAL_TIM_PERIOD_ELAPSED_CB_ID, sm_timer_continuous_callback);
+            if (sm_hw_table[j].timer == sm_hw_table[id].timer)
+            {
+                already_registered = pdTRUE;
+                break;
+            }
         }
-        else
+        if (already_registered)
         {
-            HAL_TIM_RegisterCallback(sm_hw_table[id].timer, HAL_TIM_PERIOD_ELAPSED_CB_ID, sm_timer_callback);
+            continue;
         }
+
+        __HAL_TIM_SET_AUTORELOAD(sm_hw_table[id].timer, SM_BASE_TICK_US);
+        HAL_TIM_RegisterCallback(sm_hw_table[id].timer, HAL_TIM_PERIOD_ELAPSED_CB_ID, sm_group_timer_callback);
     }
 
     sm_report_queue = xQueueCreateStatic(SM_REPORT_QUEUE_LEN, sizeof(SM_Report_t), sm_report_queue_buf, &sm_report_queue_struct);
@@ -372,7 +402,7 @@ void SM_Run(uint8_t id, uint8_t dir, uint32_t steps)
     taskENTER_CRITICAL();
     if (sm_vars[id].state == SM_STATE_READY) // 重新确认
     {
-        start_motor_timer(id, sm_vars[id].speed);
+        start_motor_timer(id);
     }
     else
     {
@@ -450,11 +480,8 @@ void SM_SetSpeed(uint8_t id, uint8_t speed)
     uint8_t index = speed - 1;
     sm_vars[id].speed = index;
 
-    // 运行中电机立即更新定时器周期，下一个中断生效
-    if (sm_vars[id].state == SM_STATE_RUNNING)
-    {
-        __HAL_TIM_SET_AUTORELOAD(sm_hw_table[id].timer, sm_pulse_period_us[index]);
-    }
+    // 更新翻转间隔；运行中的电机在下次翻转重载时生效
+    sm_vars[id].tick_ticks = sm_pulse_period_us[index] / SM_BASE_TICK_US;
 }
 
 /**
