@@ -27,9 +27,24 @@ typedef struct
 #define SPEED_CURVE_SIZE 10 // 速度档位(合法档位1~10，内部索引0~9)
 #define SM_BASE_TICK_US 50  // 共享定时器基频周期(µs)，即 CLK 翻转的最小时间单位
 
-// 各速度档位对应的 CLK 翻转周期(µs)。共享定时器以 SM_BASE_TICK_US 固定周期运行，
-// 每个电机的实际翻转间隔 = 本表值 / SM_BASE_TICK_US 个基频tick（表值须为其整数倍）。
-static const uint16_t sm_pulse_period_us[SPEED_CURVE_SIZE] = {150, 300, 450, 50, 100, 200, 250, 350, 400, 500};
+// 各速度档位对应的 CLK 翻转周期(µs)列表。共享定时器以 SM_BASE_TICK_US 固定周期
+// 运行，每个电机的实际翻转间隔 = 表值 / SM_BASE_TICK_US 个基频tick。用 X 宏保持
+// 单一数据源：既生成速度表数组，又用于逐档编译期整除校验。
+#define SM_SPEED_PERIODS(X) \
+    X(150) X(300) X(450) X(50) X(100) \
+    X(200) X(250) X(350) X(400) X(500)
+
+// 生成速度表数组
+#define SM_PERIOD_ENTRY(us) us,
+static const uint16_t sm_pulse_period_us[SPEED_CURVE_SIZE] = { SM_SPEED_PERIODS(SM_PERIOD_ENTRY) };
+#undef SM_PERIOD_ENTRY
+
+// 编译期校验：每档 CLK 翻转周期必须是 SM_BASE_TICK_US 的整数倍，
+// 否则 start_motor_timer 里的整数除法会静默截断，导致速度失真
+#define SM_CHECK_DIVISIBLE(us) _Static_assert((us) % SM_BASE_TICK_US == 0, "sm_pulse_period_us entry must be a multiple of SM_BASE_TICK_US");
+SM_SPEED_PERIODS(SM_CHECK_DIVISIBLE)
+#undef SM_CHECK_DIVISIBLE
+#undef SM_SPEED_PERIODS
 
 // 编译期校验：SM_DEFAULT_SPEED 必须落在合法档位 1~10，否则 sm_vars[].speed 会越界
 // 读取 sm_pulse_period_us[]（大小 SPEED_CURVE_SIZE，索引 0~9），造成未定义行为。

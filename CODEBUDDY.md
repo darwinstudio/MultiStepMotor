@@ -59,3 +59,4 @@ MultiStepMotor 是一个面向 STM32 + FreeRTOS 嵌入式项目的轻量级多�
 
 - 注释和文档用中文书写；改动代码注释时保持该约定。
 - `sm_vars[]` 保存每个电机的全部运行时状态；有一个编译期 `#error` 守卫强制 `1 <= SM_DEFAULT_SPEED <= SPEED_CURVE_SIZE`。
+- 速度表 `sm_pulse_period_us[]` 由 X 宏 `SM_SPEED_PERIODS` 单一数据源生成，并逐档用 `_Static_assert` 校验每档都是 `SM_BASE_TICK_US` 的整数倍（改速度值时只改宏列表，数组和校验会自动跟随）。
