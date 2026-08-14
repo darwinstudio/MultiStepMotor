@@ -311,27 +311,15 @@ void SM_Init(void) {
     // 全库唯一的定时器（SM_TIMER）只注册一次回调、设一次基频周期
     __HAL_TIM_SET_AUTORELOAD(SM_TIMER, SM_BASE_TICK_US);
     if (HAL_TIM_RegisterCallback(SM_TIMER, HAL_TIM_PERIOD_ELAPSED_CB_ID, sm_timer_callback) != HAL_OK) {
-#ifdef SM_USE_EASYLOGGER
-        log_e("Motor timer register fail.");
-#endif
         return;
     }
 
     sm_report_queue =
         xQueueCreateStatic(SM_REPORT_QUEUE_LEN, sizeof(SM_Report_t), sm_report_queue_buf, &sm_report_queue_struct);
     if (sm_report_queue == NULL) {
-#ifdef SM_USE_EASYLOGGER
-        log_e("Motor report queue create fail.");
-#endif
         return;
     }
-    TaskHandle_t motor_handle =
-        xTaskCreateStatic(task_entry, "sm", SM_TASK_STACK_SIZE, NULL, SM_TASK_PRIORITY, sm_task_stack, &sm_task_struct);
-    if (motor_handle == NULL) {
-#ifdef SM_USE_EASYLOGGER
-        log_e("Motor task create fail.");
-#endif
-    }
+    xTaskCreateStatic(task_entry, "sm", SM_TASK_STACK_SIZE, NULL, SM_TASK_PRIORITY, sm_task_stack, &sm_task_struct);
 }
 
 /**
