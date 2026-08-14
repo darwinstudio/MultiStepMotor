@@ -11,8 +11,8 @@
 #include "queue.h"
 #include "task.h"
 #ifdef SL_USE_EASYLOGGER
-#include "elog.h"
 #define LOG_TAG "stepper_motor"
+#include "elog.h"
 #endif
 
 // 电机控制变量集合结构体
