@@ -163,14 +163,14 @@ SM_SetSpeed(SM_ID_X_AXIS, 5);
 // 停止泵
 SM_StopContinuous(SM_ID_PUMP);
 
-// 限位触发时调用（通常在 EXTI 中断回调里，可从 ISR 上下文安全调用）
-void HAL_GPIO_EXTI_Callback(uint16_t pin)
+// 限位触发：在限位扫描定时器中断里硬停电机（只停电机、不上报）
+void LIMIT_Scan_TIM_Callback(void)
 {
-    if (pin == MOTOR_LIMIT_X_Pin)
-    {
-        SM_StopByLimit(SM_ID_X_AXIS);  // 立即停止，并上报 SM_STOP_LIMIT
-    }
+    SM_StopByLimitISR(SM_ID_X_AXIS);  // 立即硬停，置 stop_type = SM_STOP_LIMIT
 }
+
+// 在任务上下文上报限位停止事件（由限位模块任务调用）
+SM_StopReportByLimit(SM_ID_X_AXIS);   // 上报 SM_STOP_LIMIT
 ```
 
 ## 可覆盖的配置项
@@ -195,7 +195,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t pin)
 | `SM_GetDir(id)` | 获取电机当前方向 |
 | `SM_SetSpeed(id, speed)` | 设置速度档位（1~10），运行中下次翻转生效 |
 | `SM_GetSpeed(id)` | 获取当前速度档位 |
-| `SM_StopByLimit(id)` | 限位触发停止（由限位模块调用） |
+| `SM_StopByLimitISR(id)` | 限位触发硬停电机（仅中断上下文，只停电机不上报） |
+| `SM_StopReportByLimit(id)` | 上报限位停止事件（仅任务上下文） |
 | `SM_Wake(id)` | 唤醒电机（使能保持电流，暂停自动休眠） |
 | `SM_Sleep(id)` | 休眠电机（仅 IDLE 状态生效，失能释放电流，恢复自动休眠；运转中调用无效） |
 | `SM_ReportAction(id, stop_type)` | 完成回调（`__weak`，用户重写） |

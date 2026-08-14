@@ -44,13 +44,13 @@ MultiStepMotor 是一个面向 STM32 + FreeRTOS 嵌入式项目的轻量级多�
 
 共享定时器的启停遵守一条不变量：**定时器运行 ⟺ 组内至少一个电机 RUNNING**。`start_motor_timer()` 仅在组内无其他 RUNNING 电机时才 `HAL_TIM_Base_Start_IT`（并清计数器）；`reset_motor_to_idle()` 仅在组内已无 RUNNING 电机时才 `HAL_TIM_Base_Stop_IT`。`group_has_running(id)` 是这条不变量的判定点。
 
-**状态机：** `IDLE → READY → RUNNING → IDLE`。`SM_Run()` 置 READY、使能电机（SW 引脚拉低）、延时约 5ms 等待驱动就绪、重新确认状态仍为 READY，然后启动定时器。`reset_motor_to_idle()` 是所有停止路径（`stop_motor_from_isr`、`SM_StopContinuous`、`SM_StopByLimit`）共同经过的唯一辅助函数，用于把电机摆回已知空闲态——它把 CLK 拉低、清步数/分频计数、置 IDLE、刷新 `stop_tick`；仅当组内已无 RUNNING 电机时才停共享定时器（见上一条不变量）。
+**状态机：** `IDLE → READY → RUNNING → IDLE`。`SM_Run()` 置 READY、使能电机（SW 引脚拉低）、延时约 5ms 等待驱动就绪、重新确认状态仍为 READY，然后启动定时器。`reset_motor_to_idle()` 是所有停止路径（`stop_motor_from_isr`、`SM_StopContinuous`、`SM_StopByLimitISR`）共同经过的唯一辅助函数，用于把电机摆回已知空闲态——它把 CLK 拉低、清步数/分频计数、置 IDLE、刷新 `stop_tick`；仅当组内已无 RUNNING 电机时才停共享定时器（见上一条不变量）。
 
-**并发模型：** 一个静态分配的 FreeRTOS 任务（`task_entry`，栈和队列全部静态分配——不使用堆）每 10ms 轮询一次：运行 `sm_auto_sleep_poll()` 并取出 `sm_report_queue`，把每条报告派发给 `__weak` 回调 `SM_ReportAction(id, stop_type)`（用户重写它以接收完成/限位/忙事件）。报告要走队列，是因为完成事件起源于 ISR 上下文；`send_report_isr_aware()` 根据上下文选择 `xQueueSendFromISR` 还是 `xQueueSend`。全程临界区都是上下文感知的（`taskENTER_CRITICAL` 对 `taskENTER_CRITICAL_FROM_ISR`）；`SM_StopByLimit` 可能从 EXTI ISR 调用，因此它和 `stop_motor_from_isr` 通过临界区互斥，避免限位中断与正常停止竞争、破坏 `stop_type`。
+**并发模型：** 一个静态分配的 FreeRTOS 任务（`task_entry`，栈和队列全部静态分配——不使用堆）每 10ms 轮询一次：运行 `sm_auto_sleep_poll()` 并取出 `sm_report_queue`，把每条报告派发给 `__weak` 回调 `SM_ReportAction(id, stop_type)`（用户重写它以接收完成/限位/忙事件）。报告要走队列，是因为完成事件起源于 ISR 上下文；`send_report_isr_aware()` 根据上下文选择 `xQueueSendFromISR` 还是 `xQueueSend`。全程临界区都是上下文感知的（`taskENTER_CRITICAL` 对 `taskENTER_CRITICAL_FROM_ISR`）；`SM_StopByLimitISR` 从限位扫描定时器中断调用（只硬停电机、置 `stop_type`，不上报），随后由任务上下文调用 `SM_StopReportByLimit` 完成上报；它与 `stop_motor_from_isr` 通过临界区互斥，避免限位中断与正常停止竞争、破坏 `stop_type`。
 
 **自动休眠：** `sm_auto_sleep_poll()` 对任何处于 IDLE 且 SW 引脚仍使能、空闲时间超过 `SLEEP_TIMEOUT_MS` 的电机执行失能（SW 拉高、CLK 拉低）。`no_sleep` 电机以及置了 `auto_sleep_disable`（由 `SM_Wake` 设置；`SM_Run` 清除）的电机跳过。
 
-**上下文限制（改 API 时重要）：** `SM_Run()` 只能在任务上下文调用——它会 `vTaskDelay` 并调用 `xQueueSend`。可从 ISR 调用的入口是 `SM_StopByLimit`（以及内部的定时器回调）。公开 API 在解引用 `sm_hw_table[id]` 之前，都通过 `id >= SM_COUNT` 检查和 `sm_hw_is_valid()` 的空句柄校验来防护。
+**上下文限制（改 API 时重要）：** `SM_Run()` 只能在任务上下文调用——它会 `vTaskDelay` 并调用 `xQueueSend`。可从 ISR 调用的入口是 `SM_StopByLimitISR`（以及内部的定时器回调）。公开 API 在解引用 `sm_hw_table[id]` 之前，都通过 `id >= SM_COUNT` 检查和 `sm_hw_is_valid()` 的空句柄校验来防护。
 
 ## 硬件注意事项（来自 README）
 

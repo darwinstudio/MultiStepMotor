@@ -50,63 +50,17 @@ typedef struct {
 // 硬件配置表，用户必须在自己的项目中提供定义
 extern const SM_HwConfig_t sm_hw_table[];
 
-/**
- * @brief 初始化步进电机驱动（自动注册所有定时器回调，创建任务和队列）
- */
 void SM_Init(void);
-
-/**
- * @brief 启动电机运行指定步数
- * @note 仅任务上下文调用（内部会使能电机并阻塞约 5ms 等待驱动就绪，
- *       且调用 xQueueSend，不可从中断上下文调用）。
- */
 void SM_Run(uint8_t id, uint8_t dir, uint32_t steps);
-
-/**
- * @brief 停止连续运转的电机（仅对continuous=1的电机有效）
- */
 void SM_StopContinuous(uint8_t id);
-
-/**
- * @brief 获取电机状态
- */
 SM_State_e SM_GetState(uint8_t id);
-
-/**
- * @brief 获取电机当前方向
- */
 SM_Dir_e SM_GetDir(uint8_t id);
-
-/**
- * @brief 设置电机速度档位（1~10）
- */
 void SM_SetSpeed(uint8_t id, uint8_t speed);
-
-/**
- * @brief 获取电机速度档位
- * @return 速度档位1~10，无效返回0xFF
- */
 uint8_t SM_GetSpeed(uint8_t id);
-
-/**
- * @brief 限位触发停止电机（由限位模块调用）
- */
-void SM_StopByLimit(uint8_t id);
-
-/**
- * @brief 唤醒电机（使能并保持电流，暂停自动休眠）
- */
+void SM_StopByLimitISR(uint8_t id);
+void SM_StopReportByLimit(uint8_t id);
 void SM_Wake(uint8_t id);
-
-/**
- * @brief 休眠电机（失能并释放电流，恢复自动休眠机制）
- * @note 仅在电机处于 IDLE 状态时生效；运转中调用会被忽略（需先停止电机）。
- */
 void SM_Sleep(uint8_t id);
-
-/**
- * @brief 电机动作完成回调（__weak，用户重写以处理事件）
- */
 void SM_ReportAction(uint8_t id, SM_StopType_e stop_type);
 
 #endif /* __STEPPER_MOTOR_H_ */

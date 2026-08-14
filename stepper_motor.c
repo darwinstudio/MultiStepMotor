@@ -185,7 +185,7 @@ static BaseType_t sm_hw_is_valid(uint8_t id) {
  */
 static void stop_motor_from_isr(uint8_t id) {
     // 用 ISR 临界区包住"停定时器 + 判定 stop_type + 上报"整段，
-    // 使其与 SM_StopByLimit 的 ISR 路径互斥，避免限位中断在 reset_motor_to_idle
+    // 使其与 SM_StopByLimitISR 的 ISR 路径互斥，避免限位中断在 reset_motor_to_idle
     // 执行中途抢占，导致 stop_type 被改写为 LIMIT 后又重复上报。
     UBaseType_t saved_interrupt_status = taskENTER_CRITICAL_FROM_ISR();
 
@@ -358,7 +358,7 @@ void SM_Init(void) {
  */
 void SM_Run(uint8_t id, uint8_t dir, uint32_t steps) {
     // 仅任务上下文可调用：内部会 vTaskDelay 使能电机，且调用 xQueueSend，
-    // 若在中断中调用会导致调度器断言/HardFault。ISR 场景请用 SM_StopByLimit 等。
+    // 若在中断中调用会导致调度器断言/HardFault。ISR 场景请用 SM_StopByLimitISR 等。
     if (xPortIsInsideInterrupt() || id >= SM_COUNT || !sm_hw_is_valid(id) || dir >= SM_DIR_NUMS || steps == 0) {
 #ifdef SL_USE_EASYLOGGER
         log_e("Motor run assert fail.");
@@ -433,7 +433,7 @@ void SM_StopContinuous(uint8_t id) {
 SM_State_e SM_GetState(uint8_t id) {
     if (id >= SM_COUNT) {
 #ifdef SL_USE_EASYLOGGER
-        log_e("Motor %d get state assert fail.");
+        log_e("Motor %d get state assert fail.", id);
 #endif
         return SM_STATE_INVALID;
     }
@@ -449,7 +449,7 @@ SM_State_e SM_GetState(uint8_t id) {
 SM_Dir_e SM_GetDir(uint8_t id) {
     if (id >= SM_COUNT || !sm_hw_is_valid(id)) {
 #ifdef SL_USE_EASYLOGGER
-        log_e("Motor %d get dir assert fail.");
+        log_e("Motor %d get dir assert fail.", id);
 #endif
         return SM_DIR_INVALID;
     }
@@ -467,7 +467,7 @@ SM_Dir_e SM_GetDir(uint8_t id) {
 void SM_SetSpeed(uint8_t id, uint8_t speed) {
     if (id >= SM_COUNT || speed > SPEED_CURVE_SIZE || speed == 0) {
 #ifdef SL_USE_EASYLOGGER
-        log_e("Motor %d set speed assert fail.");
+        log_e("Motor %d set speed assert fail.", id);
 #endif
         return;
     }
@@ -487,55 +487,49 @@ void SM_SetSpeed(uint8_t id, uint8_t speed) {
 uint8_t SM_GetSpeed(uint8_t id) {
     if (id >= SM_COUNT) {
 #ifdef SL_USE_EASYLOGGER
-        log_e("Motor %d get speed assert fail.");
+        log_e("Motor %d get speed assert fail.", id);
 #endif
         return 0xFF;
     }
 
     return sm_vars[id].speed + 1;
 }
-
 /**
- * @brief 限位停止电机的接口
+ * @brief 限位定时器中断扫描中硬停电机
+ * @param id
+ */
+void SM_StopByLimitISR(uint8_t id) {
+    if (!xPortIsInsideInterrupt()) {
+        return;
+    }
+    if (id >= SM_COUNT || !sm_hw_is_valid(id)) {
+        return;
+    }
+    UBaseType_t saved_interrupt_status = taskENTER_CRITICAL_FROM_ISR();
+    if (sm_vars[id].state != SM_STATE_IDLE) {
+        reset_motor_to_idle(id, pdTRUE);
+        sm_vars[id].stop_type = SM_STOP_LIMIT;
+    }
+    taskEXIT_CRITICAL_FROM_ISR(saved_interrupt_status);
+}
+/**
+ * @brief 限位停止电机的上报接口
  *
  * @param id
  */
-void SM_StopByLimit(uint8_t id) {
-    BaseType_t in_isr = xPortIsInsideInterrupt();
-
-    if (id >= SM_COUNT || !sm_hw_is_valid(id)) {
-#ifdef SL_USE_EASYLOGGER
-        if (!in_isr) {
-            log_e("Motor %d stop by limit assert fail.");
-        }
-#endif
+void SM_StopReportByLimit(uint8_t id) {
+    if (xPortIsInsideInterrupt()) {
         return;
     }
 
-    BaseType_t need_report = pdFALSE;
-    UBaseType_t saved_interrupt_status;
-
-    // 限位可能由 EXTI 中断调用，需按上下文选择临界区，使停止在 ISR 与任务两种上下文都安全
-    if (in_isr) {
-        saved_interrupt_status = taskENTER_CRITICAL_FROM_ISR();
-    } else {
-        taskENTER_CRITICAL();
+    if (id >= SM_COUNT || !sm_hw_is_valid(id)) {
+#ifdef SL_USE_EASYLOGGER
+        log_e("Motor %d stop by limit assert fail.", id);
+#endif
+        return;
     }
-
-    if (sm_vars[id].state != SM_STATE_IDLE) {
-        reset_motor_to_idle(id, in_isr);
-        sm_vars[id].stop_type = SM_STOP_LIMIT;
-        need_report           = pdTRUE;
-    }
-
-    if (in_isr) {
-        taskEXIT_CRITICAL_FROM_ISR(saved_interrupt_status);
-    } else {
-        taskEXIT_CRITICAL();
-    }
-
-    if (need_report) {
-        send_report_isr_aware(id, SM_STOP_LIMIT, in_isr);
+    if (sm_vars[id].stop_type == SM_STOP_LIMIT) {
+        send_report_isr_aware(id, SM_STOP_LIMIT, pdFALSE);
     }
 }
 
@@ -546,7 +540,7 @@ void SM_StopByLimit(uint8_t id) {
 void SM_Wake(uint8_t id) {
     if (id >= SM_COUNT || !sm_hw_is_valid(id)) {
 #ifdef SL_USE_EASYLOGGER
-        log_e("Motor %d wake assert fail.");
+        log_e("Motor %d wake assert fail.", id);
 #endif
         return;
     }
@@ -564,7 +558,7 @@ void SM_Wake(uint8_t id) {
 void SM_Sleep(uint8_t id) {
     if (id >= SM_COUNT || !sm_hw_is_valid(id)) {
 #ifdef SL_USE_EASYLOGGER
-        log_e("Motor %d sleep assert fail.");
+        log_e("Motor %d sleep assert fail.", id);
 #endif
         return;
     }
@@ -573,7 +567,7 @@ void SM_Sleep(uint8_t id) {
     // 避免"驱动已失能但定时器仍在跑、状态机仍 RUNNING"的软硬件失同步。
     if (sm_vars[id].state != SM_STATE_IDLE) {
 #ifdef SL_USE_EASYLOGGER
-        log_e("Motor %d sleep,motor not idle.");
+        log_e("Motor %d sleep,motor not idle.", id);
 #endif
         return;
     }
