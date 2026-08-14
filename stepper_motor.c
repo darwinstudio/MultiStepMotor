@@ -3,6 +3,10 @@
 #include "FreeRTOS.h"
 #include "queue.h"
 #include "task.h"
+#ifdef SL_USE_EASYLOGGER
+#include "elog.h"
+#define LOG_TAG "stepper_motor"
+#endif
 
 // 电机控制变量集合结构体
 typedef struct {
@@ -96,6 +100,9 @@ static void start_motor_timer(uint8_t id) {
     if (!group_has_running(id)) {
         __HAL_TIM_SET_COUNTER(sm_hw_table[id].timer, 0);
         if (HAL_TIM_Base_Start_IT(sm_hw_table[id].timer) != HAL_OK) {
+#ifdef SL_USE_EASYLOGGER
+            log_e("Motor %d timer start fail.", id);
+#endif
             return; // 启动失败则不更新状态
         }
     }
@@ -266,6 +273,9 @@ static void sm_auto_sleep_poll(void) {
         if (now_tick - sm_vars[id].stop_tick >= pdMS_TO_TICKS(SLEEP_TIMEOUT_MS)) {
             HAL_GPIO_WritePin(sm_hw_table[id].sw_port, sm_hw_table[id].sw_pin, GPIO_PIN_SET); // 失能电机
             HAL_GPIO_WritePin(sm_hw_table[id].clk_port, sm_hw_table[id].clk_pin, GPIO_PIN_RESET); // CLK拉低
+#ifdef SL_USE_EASYLOGGER
+            log_i("Motor %d entry sleep.", id);
+#endif
         }
     }
 }
@@ -313,12 +323,30 @@ void SM_Init(void) {
         }
 
         __HAL_TIM_SET_AUTORELOAD(sm_hw_table[id].timer, SM_BASE_TICK_US);
-        HAL_TIM_RegisterCallback(sm_hw_table[id].timer, HAL_TIM_PERIOD_ELAPSED_CB_ID, sm_group_timer_callback);
+        if (HAL_TIM_RegisterCallback(sm_hw_table[id].timer, HAL_TIM_PERIOD_ELAPSED_CB_ID, sm_group_timer_callback)
+            != HAL_OK) {
+#ifdef SL_USE_EASYLOGGER
+            log_e("Motor %d timer register fail".id);
+#endif
+            return;
+        }
     }
 
     sm_report_queue =
         xQueueCreateStatic(SM_REPORT_QUEUE_LEN, sizeof(SM_Report_t), sm_report_queue_buf, &sm_report_queue_struct);
-    xTaskCreateStatic(task_entry, "sm", SM_TASK_STACK_SIZE, NULL, SM_TASK_PRIORITY, sm_task_stack, &sm_task_struct);
+    if (sm_report_queue == NULL) {
+#ifdef SL_USE_EASYLOGGER
+        log_e("Motor report queue create fail.");
+#endif
+        return;
+    }
+    TaskHandle_t motor_handle =
+        xTaskCreateStatic(task_entry, "sm", SM_TASK_STACK_SIZE, NULL, SM_TASK_PRIORITY, sm_task_stack, &sm_task_struct);
+    if (motor_handle == NULL) {
+#ifdef SL_USE_EASYLOGGER
+        log_e("Motor task create fail.");
+#endif
+    }
 }
 
 /**
@@ -332,6 +360,9 @@ void SM_Run(uint8_t id, uint8_t dir, uint32_t steps) {
     // 仅任务上下文可调用：内部会 vTaskDelay 使能电机，且调用 xQueueSend，
     // 若在中断中调用会导致调度器断言/HardFault。ISR 场景请用 SM_StopByLimit 等。
     if (xPortIsInsideInterrupt() || id >= SM_COUNT || !sm_hw_is_valid(id) || dir >= SM_DIR_NUMS || steps == 0) {
+#ifdef SL_USE_EASYLOGGER
+        log_e("Motor run assert fail.");
+#endif
         return;
     }
 
@@ -342,6 +373,9 @@ void SM_Run(uint8_t id, uint8_t dir, uint32_t steps) {
 
         // 非阻塞发送：队列满则直接丢弃该 BUSY 报告，避免公共 API 阻塞调用方
         xQueueSend(sm_report_queue, &report, 0);
+#ifdef SL_USE_EASYLOGGER
+        log_w("Motor %d is busy.", id);
+#endif
         return;
     }
 
@@ -398,6 +432,9 @@ void SM_StopContinuous(uint8_t id) {
  */
 SM_State_e SM_GetState(uint8_t id) {
     if (id >= SM_COUNT) {
+#ifdef SL_USE_EASYLOGGER
+        log_e("Motor %d get state assert fail.");
+#endif
         return SM_STATE_INVALID;
     }
     return sm_vars[id].state;
@@ -411,6 +448,9 @@ SM_State_e SM_GetState(uint8_t id) {
  */
 SM_Dir_e SM_GetDir(uint8_t id) {
     if (id >= SM_COUNT || !sm_hw_is_valid(id)) {
+#ifdef SL_USE_EASYLOGGER
+        log_e("Motor %d get dir assert fail.");
+#endif
         return SM_DIR_INVALID;
     }
 
@@ -426,6 +466,9 @@ SM_Dir_e SM_GetDir(uint8_t id) {
  */
 void SM_SetSpeed(uint8_t id, uint8_t speed) {
     if (id >= SM_COUNT || speed > SPEED_CURVE_SIZE || speed == 0) {
+#ifdef SL_USE_EASYLOGGER
+        log_e("Motor %d set speed assert fail.");
+#endif
         return;
     }
 
@@ -443,6 +486,9 @@ void SM_SetSpeed(uint8_t id, uint8_t speed) {
  */
 uint8_t SM_GetSpeed(uint8_t id) {
     if (id >= SM_COUNT) {
+#ifdef SL_USE_EASYLOGGER
+        log_e("Motor %d get speed assert fail.");
+#endif
         return 0xFF;
     }
 
@@ -455,12 +501,18 @@ uint8_t SM_GetSpeed(uint8_t id) {
  * @param id
  */
 void SM_StopByLimit(uint8_t id) {
+    BaseType_t in_isr = xPortIsInsideInterrupt();
+
     if (id >= SM_COUNT || !sm_hw_is_valid(id)) {
+#ifdef SL_USE_EASYLOGGER
+        if (!in_isr) {
+            log_e("Motor %d stop by limit assert fail.");
+        }
+#endif
         return;
     }
 
     BaseType_t need_report = pdFALSE;
-    BaseType_t in_isr      = xPortIsInsideInterrupt();
     UBaseType_t saved_interrupt_status;
 
     // 限位可能由 EXTI 中断调用，需按上下文选择临界区，使停止在 ISR 与任务两种上下文都安全
@@ -493,6 +545,9 @@ void SM_StopByLimit(uint8_t id) {
  */
 void SM_Wake(uint8_t id) {
     if (id >= SM_COUNT || !sm_hw_is_valid(id)) {
+#ifdef SL_USE_EASYLOGGER
+        log_e("Motor %d wake assert fail.");
+#endif
         return;
     }
 
@@ -508,12 +563,18 @@ void SM_Wake(uint8_t id) {
  */
 void SM_Sleep(uint8_t id) {
     if (id >= SM_COUNT || !sm_hw_is_valid(id)) {
+#ifdef SL_USE_EASYLOGGER
+        log_e("Motor %d sleep assert fail.");
+#endif
         return;
     }
 
     // 仅 IDLE 状态允许休眠；运转中调用 Sleep 视为误用，直接返回，
     // 避免"驱动已失能但定时器仍在跑、状态机仍 RUNNING"的软硬件失同步。
     if (sm_vars[id].state != SM_STATE_IDLE) {
+#ifdef SL_USE_EASYLOGGER
+        log_e("Motor %d sleep,motor not idle.");
+#endif
         return;
     }
 
