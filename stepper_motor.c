@@ -125,13 +125,13 @@ static void start_motor_timer(uint8_t id)
  */
 static void reset_motor_to_idle(uint8_t id, BaseType_t in_isr)
 {
-    // 先置 IDLE 并清本电机状态，再判断组内是否还有 RUNNING 电机，
-    // 以免把本电机自身算进组内运行计数
+    // 先把本电机置为 IDLE 并清计数，再判断组内是否还有 RUNNING 电机，
+    // 以便仅当组内已无电机运行时才停止共享定时器
+    sm_vars[id].state = SM_STATE_IDLE;
     HAL_GPIO_WritePin(sm_hw_table[id].clk_port, sm_hw_table[id].clk_pin, GPIO_PIN_RESET); // CLK 复位到确定电平
     sm_vars[id].toggle_cnt = 0;
     sm_vars[id].step_cnt = 0;
     sm_vars[id].tick_cnt = 0;
-    sm_vars[id].state = SM_STATE_IDLE;
 
     if (!group_has_running(id))
     {
