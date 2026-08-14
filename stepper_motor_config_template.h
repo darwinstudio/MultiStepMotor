@@ -41,6 +41,6 @@
 #define SM_TASK_PRIORITY 5
 #endif
 
-// #define SL_USE_EASYLOGGER // 使用easylogger日志库打印
+// #define SM_USE_EASYLOGGER // 使用easylogger日志库打印
 
 #endif /* __STEPPER_MOTOR_CONFIG_H_ */
