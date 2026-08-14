@@ -42,7 +42,6 @@ typedef struct {
     uint16_t dir_pin;
     GPIO_PinState forward_pin;
 
-    TIM_HandleTypeDef* timer;
     uint8_t continuous; // 0=按步数运行, 1=连续运转
     uint8_t no_sleep; // 1=永不自动休眠（如垂直轴需保持电流）
 } SM_HwConfig_t;

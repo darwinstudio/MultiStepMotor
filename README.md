@@ -12,7 +12,7 @@
 
 - 最多支持 N 个步进电机同时管理（数量由用户配置决定）
 - 定时器 ISR 驱动，精确脉冲输出
-- 多个电机可共享一个定时器（基频 50μs，按速度档位分频），节省定时器资源
+- 所有电机共享同一个定时器（基频 50μs，按速度档位分频），节省定时器资源
 - 10 档速度可调（50μs ~ 500μs 翻转周期）
 - 电机空闲 3 秒自动休眠，降低功耗
 - 限位触发立即停止并上报（消抖由调用方的限位模块负责）
@@ -86,6 +86,9 @@ target_include_directories(my_app PRIVATE
 // 电机数量
 #define SM_COUNT 3
 
+// 库内唯一的定时器句柄（必须定义）：所有电机共享该定时器
+#define SM_TIMER &htim3
+
 // 电机编号
 typedef enum
 {
@@ -109,26 +112,26 @@ const SM_HwConfig_t sm_hw_table[SM_COUNT] = {
         .clk_port = MOTOR_CLK_X_GPIO_Port, .clk_pin = MOTOR_CLK_X_Pin,
         .dir_port = MOTOR_DIR_X_GPIO_Port, .dir_pin = MOTOR_DIR_X_Pin,
         .forward_pin = GPIO_PIN_RESET,
-        .timer = &htim3, .continuous = 0,
+        .continuous = 0,
     },
     [SM_ID_Y_AXIS] = {
         .sw_port = MOTOR_SW_Y_GPIO_Port,  .sw_pin = MOTOR_SW_Y_Pin,
         .clk_port = MOTOR_CLK_Y_GPIO_Port, .clk_pin = MOTOR_CLK_Y_Pin,
         .dir_port = MOTOR_DIR_Y_GPIO_Port, .dir_pin = MOTOR_DIR_Y_Pin,
         .forward_pin = GPIO_PIN_RESET,
-        .timer = &htim3, .continuous = 0, .no_sleep = 1,  // 与 X 轴共享 htim3；垂直轴需保持电流
+        .continuous = 0, .no_sleep = 1,  // 垂直轴需保持电流
     },
     [SM_ID_PUMP] = {
         .sw_port = MOTOR_SW_P_GPIO_Port,  .sw_pin = MOTOR_SW_P_Pin,
         .clk_port = MOTOR_CLK_P_GPIO_Port, .clk_pin = MOTOR_CLK_P_Pin,
         .dir_port = MOTOR_DIR_P_GPIO_Port, .dir_pin = MOTOR_DIR_P_Pin,
         .forward_pin = GPIO_PIN_SET,
-        .timer = &htim4, .continuous = 1,  // 连续运转模式
+        .continuous = 1,  // 连续运转模式
     },
 };
 ```
 
-上面 X、Y 两轴共享 `htim3`（一个定时器管多个电机，各自按速度档位分频出不同节奏）；泵单独用 `htim4` 连续运转。
+上面三个电机全部共享 `htim3`（由配置宏 `SM_TIMER` 指定），各自按速度档位分频出不同节奏；泵为连续运转模式。
 
 ### 5. 使用
 
@@ -177,6 +180,7 @@ SM_StopReportByLimit(SM_ID_X_AXIS);   // 上报 SM_STOP_LIMIT
 
 | 宏 | 默认值 | 说明 |
 |----|--------|------|
+| `SM_TIMER` | 无（必须定义） | 库内唯一的定时器句柄，所有电机共享，如 `#define SM_TIMER &htim3` |
 | `SM_DEFAULT_SPEED` | 2 | 默认速度档位（1~10） |
 | `SM_BASE_TICK_US` | 50 | 共享定时器基频周期(µs)，所有档位翻转周期须为其整数倍 |
 | `SM_SPEED_PERIODS` | 见模板 | 各速度档位的 CLK 翻转周期(µs)，X 宏形式；条目数须等于 `SPEED_CURVE_SIZE`（10） |
@@ -211,7 +215,7 @@ SM_StopReportByLimit(SM_ID_X_AXIS);   // 上报 SM_STOP_LIMIT
 | CLK | 脉冲引脚（定时器中断翻转） |
 | DIR | 方向引脚 |
 
-定时器方面，多个电机**可以共享一个** `TIM_HandleTypeDef`——在 `sm_hw_table[]` 中把多个电机的 `.timer` 填成同一个句柄即可。库会以固定基频（默认 50μs，可用 `SM_BASE_TICK_US` 覆盖）运行该定时器，再按各电机的速度档位分频出各自的翻转节奏。每个共享定时器只注册一次回调、只设一次周期。
+定时器方面，全库**只使用一个** `TIM_HandleTypeDef`——通过配置宏 `SM_TIMER` 指定句柄，所有电机共享它。库会以固定基频（默认 50μs，可用 `SM_BASE_TICK_US` 覆盖）运行该定时器，再按各电机的速度档位分频出各自的翻转节奏。回调只注册一次、周期只设一次。
 
 ## STM32CubeMX 定时器配置注意事项
 

@@ -1,5 +1,12 @@
 #include "stepper_motor.h"
 
+// 编译期守卫：SM_TIMER 必须由用户配置定义——全库唯一的定时器句柄，
+// 所有电机共享（如 #define SM_TIMER &htim3）。缺失时直接构建失败，
+// 避免运行到 SM_Init 才发现句柄无处可寻。
+#ifndef SM_TIMER
+#error "SM_TIMER must be defined in stepper_motor_config.h (e.g. #define SM_TIMER &htim3)"
+#endif
+
 #include "FreeRTOS.h"
 #include "queue.h"
 #include "task.h"
@@ -64,17 +71,18 @@ static StackType_t sm_task_stack[SM_TASK_STACK_SIZE];
 static StaticTask_t sm_task_struct;
 
 /**
- * @brief 判断与指定电机共享同一定时器的组内，是否还有 RUNNING 状态的电机
+ * @brief 判断除指定电机外是否还有 RUNNING 状态的电机
  *
- * 多电机可共享同一定时器。定时器"运行 ⟺ 组内至少一个电机 RUNNING"这一
- * 不变量，由本函数支撑：启动/停止定时器都据此判断，避免互相干扰。
+ * 全库只使用一个定时器（见 SM_TIMER）。定时器"运行 ⟺ 至少一个电机
+ * RUNNING"这一不变量，由本函数支撑：启动/停止定时器都据此判断，
+ * 避免互相干扰。
  *
- * @param id 电机ID（调用方需保证 id < SM_COUNT 且 timer 非空）
- * @return pdTRUE 组内存在 RUNNING 电机；pdFALSE 组内全空闲
+ * @param id 电机ID（调用方需保证 id < SM_COUNT）
+ * @return pdTRUE 存在其他 RUNNING 电机；pdFALSE 其余电机全空闲
  */
-static BaseType_t group_has_running(uint8_t id) {
+static BaseType_t any_other_running(uint8_t id) {
     for (uint8_t j = 0; j < SM_COUNT; j++) {
-        if (j != id && sm_hw_table[j].timer == sm_hw_table[id].timer && sm_vars[j].state == SM_STATE_RUNNING) {
+        if (j != id && sm_vars[j].state == SM_STATE_RUNNING) {
             return pdTRUE;
         }
     }
@@ -87,19 +95,15 @@ static BaseType_t group_has_running(uint8_t id) {
  * @param id
  */
 static void start_motor_timer(uint8_t id) {
-    if (sm_hw_table[id].timer == NULL) {
-        return;
-    }
-
     // 按当前速度档位换算翻转间隔（基频tick数），装载分频计数器
     sm_vars[id].tick_ticks = sm_pulse_period_us[sm_vars[id].speed] / SM_BASE_TICK_US;
     sm_vars[id].tick_cnt   = sm_vars[id].tick_ticks;
 
-    // 仅当组内无其他 RUNNING 电机时才启动共享定时器并清计数器；
-    // 组已在跑时启动新电机绝不能清计数器，否则会打乱其他电机的时序
-    if (!group_has_running(id)) {
-        __HAL_TIM_SET_COUNTER(sm_hw_table[id].timer, 0);
-        if (HAL_TIM_Base_Start_IT(sm_hw_table[id].timer) != HAL_OK) {
+    // 仅当无其他 RUNNING 电机时才启动共享定时器并清计数器；
+    // 定时器已在跑时启动新电机绝不能清计数器，否则会打乱其他电机的时序
+    if (!any_other_running(id)) {
+        __HAL_TIM_SET_COUNTER(SM_TIMER, 0);
+        if (HAL_TIM_Base_Start_IT(SM_TIMER) != HAL_OK) {
 #ifdef SL_USE_EASYLOGGER
             log_e("Motor %d timer start fail.", id);
 #endif
@@ -114,8 +118,8 @@ static void start_motor_timer(uint8_t id) {
  * @brief 将电机复位到确定的空闲状态
  *
  * 统一处理三条停止路径共有的"摆到已知空闲态"动作：CLK 拉低、清步数/分频
- * 计数、置 IDLE、刷新 stop_tick。共享定时器只在组内已无 RUNNING 电机时才
- * 停止，避免停掉同组仍在运行的电机。集中于此可避免某条路径遗漏 CLK 复位等
+ * 计数、置 IDLE、刷新 stop_tick。共享定时器只在已无 RUNNING 电机时才
+ * 停止，避免停掉仍在运行的电机。集中于此可避免某条路径遗漏 CLK 复位等
  * 引脚安全操作。
  *
  * @param id     电机ID
@@ -123,17 +127,17 @@ static void start_motor_timer(uint8_t id) {
  * @note 本函数不自带临界区，调用方需自行按上下文包好临界区
  */
 static void reset_motor_to_idle(uint8_t id, BaseType_t in_isr) {
-    // 先把本电机置为 IDLE 并清计数，再判断组内是否还有 RUNNING 电机，
-    // 以便仅当组内已无电机运行时才停止共享定时器
+    // 先把本电机置为 IDLE 并清计数，再判断是否还有 RUNNING 电机，
+    // 以便仅当已无电机运行时才停止共享定时器
     sm_vars[id].state = SM_STATE_IDLE;
     HAL_GPIO_WritePin(sm_hw_table[id].clk_port, sm_hw_table[id].clk_pin, GPIO_PIN_RESET); // CLK 复位到确定电平
     sm_vars[id].toggle_cnt = 0;
     sm_vars[id].step_cnt   = 0;
     sm_vars[id].tick_cnt   = 0;
 
-    if (!group_has_running(id)) {
-        HAL_TIM_Base_Stop_IT(sm_hw_table[id].timer);
-        __HAL_TIM_SET_COUNTER(sm_hw_table[id].timer, 0); // 重置计数器，防止下次启动时残留值导致异常
+    if (!any_other_running(id)) {
+        HAL_TIM_Base_Stop_IT(SM_TIMER);
+        __HAL_TIM_SET_COUNTER(SM_TIMER, 0); // 重置计数器，防止下次启动时残留值导致异常
     }
 
     sm_vars[id].stop_tick = in_isr ? xTaskGetTickCountFromISR() : xTaskGetTickCount();
@@ -163,7 +167,7 @@ static void send_report_isr_aware(uint8_t id, SM_StopType_e stop_type, BaseType_
 }
 
 /**
- * @brief 校验电机硬件配置是否有效（定时器与三组 GPIO 端口均非空）
+ * @brief 校验电机硬件配置是否有效（三组 GPIO 端口均非空）
  *
  * 用户配置错误（如端口填 NULL）会导致 HAL_GPIO_WritePin/ReadPin 触发 HardFault。
  * 公共 API 在解引用 sm_hw_table[id] 前应先经此校验。
@@ -174,8 +178,7 @@ static void send_report_isr_aware(uint8_t id, SM_StopType_e stop_type, BaseType_
 static BaseType_t sm_hw_is_valid(uint8_t id) {
     const SM_HwConfig_t* hw = &sm_hw_table[id];
 
-    return ((hw->timer != NULL) && (hw->sw_port != NULL) && (hw->clk_port != NULL) && (hw->dir_port != NULL)) ? pdTRUE
-                                                                                                              : pdFALSE;
+    return ((hw->sw_port != NULL) && (hw->clk_port != NULL) && (hw->dir_port != NULL)) ? pdTRUE : pdFALSE;
 }
 
 /**
@@ -205,21 +208,19 @@ static void stop_motor_from_isr(uint8_t id) {
 }
 
 /**
- * @brief 共享定时器组回调（统一处理步数模式与连续模式）
+ * @brief 共享定时器回调（统一处理步数模式与连续模式）
  *
- * 一个定时器可被多个电机共享，回调按句柄匹配所有共用该定时器的电机并逐个
- * 处理。每个电机以自身速度档位对应的 tick_ticks 分频翻转 CLK：步数模式计步
+ * 全库只使用一个定时器（见 SM_TIMER），回调遍历所有电机并逐个处理。
+ * 每个电机以自身速度档位对应的 tick_ticks 分频翻转 CLK：步数模式计步
  * 并在达标后停止，连续模式仅翻转 CLK。
  *
- * @param htim 触发中断的定时器句柄
+ * @param htim 触发中断的定时器句柄（未使用，签名由 HAL 回调要求）
  */
-static void sm_group_timer_callback(TIM_HandleTypeDef* htim) {
-    for (uint8_t id = 0; id < SM_COUNT; id++) {
-        if (sm_hw_table[id].timer != htim) {
-            continue;
-        }
+static void sm_timer_callback(TIM_HandleTypeDef* htim) {
+    UNUSED(htim);
 
-        // 只处理 RUNNING 电机；IDLE 电机跳过且不停定时器（定时器可能正服务组内其他电机）
+    for (uint8_t id = 0; id < SM_COUNT; id++) {
+        // 只处理 RUNNING 电机；IDLE 电机跳过且不停定时器（定时器可能正服务其他电机）
         if (sm_vars[id].state != SM_STATE_RUNNING) {
             continue;
         }
@@ -305,31 +306,15 @@ void SM_Init(void) {
         sm_vars[id].state     = SM_STATE_IDLE;
         sm_vars[id].stop_type = SM_STOP_NONE;
         sm_vars[id].speed     = SM_DEFAULT_SPEED - 1;
+    }
 
-        if (sm_hw_table[id].timer == NULL) {
-            continue;
-        }
-
-        // 每个唯一定时器只注册一次回调、设一次基频周期；多电机共享同一句柄时按句柄去重
-        BaseType_t already_registered = pdFALSE;
-        for (uint8_t j = 0; j < id; j++) {
-            if (sm_hw_table[j].timer == sm_hw_table[id].timer) {
-                already_registered = pdTRUE;
-                break;
-            }
-        }
-        if (already_registered) {
-            continue;
-        }
-
-        __HAL_TIM_SET_AUTORELOAD(sm_hw_table[id].timer, SM_BASE_TICK_US);
-        if (HAL_TIM_RegisterCallback(sm_hw_table[id].timer, HAL_TIM_PERIOD_ELAPSED_CB_ID, sm_group_timer_callback)
-            != HAL_OK) {
+    // 全库唯一的定时器（SM_TIMER）只注册一次回调、设一次基频周期
+    __HAL_TIM_SET_AUTORELOAD(SM_TIMER, SM_BASE_TICK_US);
+    if (HAL_TIM_RegisterCallback(SM_TIMER, HAL_TIM_PERIOD_ELAPSED_CB_ID, sm_timer_callback) != HAL_OK) {
 #ifdef SL_USE_EASYLOGGER
-            log_e("Motor %d timer register fail".id);
+        log_e("Motor timer register fail.");
 #endif
-            return;
-        }
+        return;
     }
 
     sm_report_queue =
