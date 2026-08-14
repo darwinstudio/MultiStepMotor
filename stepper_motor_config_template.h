@@ -25,9 +25,7 @@
 // 各速度档位的 CLK 翻转周期(µs)，X 宏形式（库据此生成速度表数组并逐档做编译期整除校验）。
 // 条目数必须等于 SPEED_CURVE_SIZE（当前为 10）。
 #ifndef SM_SPEED_PERIODS
-#define SM_SPEED_PERIODS(X) \
-    X(150) X(300) X(450) X(50) X(100) \
-    X(200) X(250) X(350) X(400) X(500)
+#define SM_SPEED_PERIODS(X) X(150) X(300) X(450) X(50) X(100) X(200) X(250) X(350) X(400) X(500)
 #endif
 
 #ifndef SLEEP_TIMEOUT_MS
@@ -35,7 +33,7 @@
 #endif
 
 #ifndef SM_TASK_STACK_SIZE
-#define SM_TASK_STACK_SIZE 512 // 任务栈深度（单位：word，即 4 字节/项，非字节）；直接传给 xTaskCreateStatic 的 usStackDepth
+#define SM_TASK_STACK_SIZE 512 // 任务栈深度
 #endif
 
 #ifndef SM_TASK_PRIORITY

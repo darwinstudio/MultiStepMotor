@@ -5,8 +5,7 @@
 #include <stdint.h>
 
 // 电机状态
-typedef enum
-{
+typedef enum {
     SM_STATE_IDLE,
     SM_STATE_READY,
     SM_STATE_RUNNING,
@@ -15,8 +14,7 @@ typedef enum
 } SM_State_e;
 
 // 电机方向
-typedef enum
-{
+typedef enum {
     SM_DIR_FORWARD,
     SM_DIR_REVERSE,
     SM_DIR_INVALID, // 无效ID等错误返回
@@ -24,31 +22,29 @@ typedef enum
 } SM_Dir_e;
 
 // 电机停止类型
-typedef enum
-{
+typedef enum {
     SM_STOP_NONE,
     SM_STOP_NORMAL, // 到达目标步数
-    SM_STOP_LIMIT,  // 限位触发停止
-    SM_STOP_BUSY,   // 电机忙
+    SM_STOP_LIMIT, // 限位触发停止
+    SM_STOP_BUSY, // 电机忙
     SM_STOP_NUMS,
 } SM_StopType_e;
 
 // 电机硬件接口结构体
-typedef struct
-{
-    GPIO_TypeDef *sw_port;
+typedef struct {
+    GPIO_TypeDef* sw_port;
     uint16_t sw_pin;
 
-    GPIO_TypeDef *clk_port;
+    GPIO_TypeDef* clk_port;
     uint16_t clk_pin;
 
-    GPIO_TypeDef *dir_port;
+    GPIO_TypeDef* dir_port;
     uint16_t dir_pin;
     GPIO_PinState forward_pin;
 
-    TIM_HandleTypeDef *timer;
+    TIM_HandleTypeDef* timer;
     uint8_t continuous; // 0=按步数运行, 1=连续运转
-    uint8_t no_sleep;   // 1=永不自动休眠（如垂直轴需保持电流）
+    uint8_t no_sleep; // 1=永不自动休眠（如垂直轴需保持电流）
 } SM_HwConfig_t;
 
 // 硬件配置表，用户必须在自己的项目中提供定义
